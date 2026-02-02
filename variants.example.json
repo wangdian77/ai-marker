@@ -1,0 +1,26 @@
+[
+  {
+    "name": "default",
+    "min_area": 0,
+    "expand": 0.0,
+    "dedupe_iou": 0.0,
+    "kpt_conf_ge": null,
+    "round": true
+  },
+  {
+    "name": "strict",
+    "min_area": 800,
+    "expand": 0.0,
+    "dedupe_iou": 0.6,
+    "kpt_conf_ge": 0.35,
+    "round": true
+  },
+  {
+    "name": "loose",
+    "min_area": 200,
+    "expand": 0.02,
+    "dedupe_iou": 0.7,
+    "kpt_conf_ge": 0.15,
+    "round": true
+  }
+]
