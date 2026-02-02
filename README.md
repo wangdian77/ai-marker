@@ -1,12 +1,18 @@
-# YOLO26-Pose Semi-Auto Labeler
+# YOLO Pose Semi-Auto Labeler
 
-Local YOLO pose auto-labeling + human review tool.
+Local, human-in-the-loop labeling tool for Ultralytics YOLO pose models.
 
-- Load local trained YOLO pose model (`.pt`, Ultralytics)
-- Run inference on an input folder of images
-- Preview overlay (bbox + keypoints)
-- Pick among multiple candidate variants (including random jitter candidates)
-- Accept/Save to a new dataset, or Reject
+It runs pose inference on a folder of images, shows an overlay (bbox + keypoints), lets you review multiple candidate variants, and then accept/save (or reject) each sample into a clean output dataset.
+
+## Features
+
+- GUI and CLI modes
+- Load a local YOLO pose model (`.pt`, Ultralytics)
+- Batch through an image folder; resume by skipping already-labeled outputs
+- Candidate generation: multiple post-processing variants + optional jitter candidates for quick comparison
+- Accept/Save into a new dataset (`output/images/` + `output/labels/`), or Reject (copy to rejected folder or hard delete)
+- Built-in OpenCV editor to manually fix bbox/keypoints
+- Optional Ultralytics `data.yaml` import for class names + pose settings (plus a few labeler-specific extensions)
 
 ## Install
 
@@ -22,6 +28,14 @@ Dependencies:
 
 ```bash
 pip install ultralytics opencv-python numpy
+```
+
+Optional (recommended):
+
+```bash
+pip install PySide6  # GUI
+pip install pyyaml   # load project YAML
+pip install pillow   # nicer Chinese text rendering in OpenCV editor (Windows)
 ```
 
 ### Optional: GPU (CUDA) Support
@@ -41,11 +55,7 @@ C:/Python314/python.exe -m pip install --index-url https://download.pytorch.org/
 C:/Python314/python.exe -c "import torch; print(torch.__version__, 'cuda', torch.cuda.is_available())"
 ```
 
-GUI mode:
-
-```bash
-pip install PySide6
-```
+Note: GPU support depends on your CUDA + PyTorch setup and your Ultralytics version.
 
 ## Output Format (YOLO Pose)
 
@@ -125,6 +135,10 @@ Controls:
 - `BBox Jitter (px)`: whole-instance translation jitter std-dev
 - `Seed` + `Re-roll`: regenerate random candidates
 - `Pick Candidate`: choose which candidate to preview/save
+
+Implementation note:
+
+- In GUI mode, inference runs in a separate worker process (helps avoid Windows crashes from long-running inference in the UI process).
 
 Device:
 
@@ -239,5 +253,7 @@ Common fields:
 - `expand`: expand bbox ratio
 - `dedupe_iou`: IoU dedupe threshold
 - `kpt_conf_ge`: keypoint confidence gate (below -> set `v=0`)
-## Chat with me
-2022573450@qq.com
+
+## Repo
+
+- Issues/feature requests: use GitHub Issues

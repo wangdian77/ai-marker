@@ -1,5 +1,7 @@
 # YOLO Labeler (Local Model + Human-in-the-loop)
 
+This is a short README. For the full documentation, see `README.md`.
+
 Minimal interactive tool to:
 - load a local trained YOLO model (Ultralytics)
 - auto-label images (POSE: bbox + keypoints)
