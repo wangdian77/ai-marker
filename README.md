@@ -29,7 +29,7 @@ python yolo_labeler_integrated.py
 - `A` / `D` or `Left` / `Right`: Prev / Next Image
 - `S`: Save current annotations
 - `R`: Reject / Skip image
-- `Del` (Double-tap): Remove selected instance
+- `Del` (Double-tap): Remove selected instance / Hide selected keypoint / Delete selected guide line
 - `L`: Toggle line drawing mode
 - `Ctrl + Wheel`: Zoom
 - `Space + Drag`: Pan

@@ -164,6 +164,7 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
         self.parent_pose = parent_pose
         self.setBrush(QtGui.QColor(255, 255, 0))
         self.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.black, 1))
+        self.setZValue(20)
         self.setFlags(
             QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
             QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges |
@@ -176,13 +177,16 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
         if v == 0:
             self.setOpacity(0.3)
             self.setBrush(QtGui.QColor(150, 150, 150))
+            self.setZValue(5)
         else:
             self.setOpacity(1.0)
             self.setBrush(QtGui.QColor(255, 255, 0))
+            self.setZValue(20)
 
     def itemChange(self, change, value):
         if change == QtWidgets.QGraphicsItem.GraphicsItemChange.ItemPositionChange:
-            self.parent_pose.update_geometry()
+            if self.scene():
+                self.parent_pose.update_geometry()
         return super().itemChange(change, value)
 
     def mousePressEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent):
@@ -196,9 +200,15 @@ class GuideLineItem(QtWidgets.QGraphicsLineItem):
     def __init__(self, p1: QtCore.QPointF, p2: QtCore.QPointF, color: QtGui.QColor):
         super().__init__(QtCore.QLineF(p1, p2))
         self.setPen(QtGui.QPen(color, 2, QtCore.Qt.PenStyle.DashLine))
-        self.setZValue(-1)
+        self.setZValue(10)
+        self.setFlags(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
+        
+    def paint(self, painter, option, widget=None):
+        if self.isSelected():
+            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 3, QtCore.Qt.PenStyle.SolidLine))
+        super().paint(painter, option, widget)
 
-class PoseItem(QtWidgets.QGraphicsItemGroup):
+class PoseItem(QtWidgets.QGraphicsObject):
     def __init__(self, pose: PoseInstance, class_names: Dict[int, str], skeleton: Optional[List[Tuple[int, int]]] = None):
         super().__init__()
         self.setFlags(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable | 
@@ -209,19 +219,18 @@ class PoseItem(QtWidgets.QGraphicsItemGroup):
         self.rotation_angle = 0.0
         
         b = pose.bbox
-        self.rect_item = QtWidgets.QGraphicsRectItem(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1)
+        self.rect_item = QtWidgets.QGraphicsRectItem(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1, self)
         self.rect_item.setPen(QtGui.QPen(QtGui.QColor(0, 255, 255), 2))
-        self.addToGroup(self.rect_item)
+        self.rect_item.setBrush(QtGui.QColor(0, 255, 255, 20))
         
         name = class_names.get(b.cls, str(b.cls))
-        self.label_item = QtWidgets.QGraphicsSimpleTextItem(name)
+        self.label_item = QtWidgets.QGraphicsSimpleTextItem(name, self)
         self.label_item.setPos(b.x1, b.y1 - 20)
         self.label_item.setBrush(QtGui.QColor(0, 255, 255))
         font = self.label_item.font()
         font.setPixelSize(14)
         font.setBold(True)
         self.label_item.setFont(font)
-        self.addToGroup(self.label_item)
         
         self.kpt_items: List[KeypointItem] = []
         for i, kp in enumerate(pose.kpts):
@@ -230,7 +239,15 @@ class PoseItem(QtWidgets.QGraphicsItemGroup):
             self.kpt_items.append(ki)
         
         self.skeleton_lines: List[QtWidgets.QGraphicsLineItem] = []
-        
+
+    def boundingRect(self):
+        return self.rect_item.boundingRect()
+
+    def paint(self, painter, option, widget=None):
+        if self.isSelected():
+            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 2, QtCore.Qt.PenStyle.DashLine))
+            painter.drawRect(self.boundingRect())
+            
     def add_to_scene(self, scene: QtWidgets.QGraphicsScene):
         scene.addItem(self)
         for ki in self.kpt_items:
@@ -250,6 +267,7 @@ class PoseItem(QtWidgets.QGraphicsItemGroup):
                 if a_i in visible_pts and b_i in visible_pts:
                     ln = QtWidgets.QGraphicsLineItem(QtCore.QLineF(visible_pts[a_i], visible_pts[b_i]))
                     ln.setPen(QtGui.QPen(QtGui.QColor(255, 255, 0), 2))
+                    ln.setZValue(10)
                     self.skeleton_lines.append(ln)
                     self.scene().addItem(ln)
         else:
@@ -257,16 +275,9 @@ class PoseItem(QtWidgets.QGraphicsItemGroup):
             for i in range(len(ids)-1):
                 ln = QtWidgets.QGraphicsLineItem(QtCore.QLineF(visible_pts[ids[i]], visible_pts[ids[i+1]]))
                 ln.setPen(QtGui.QPen(QtGui.QColor(255, 255, 0), 2))
+                ln.setZValue(10)
                 self.skeleton_lines.append(ln)
                 self.scene().addItem(ln)
-
-        if visible_pts:
-            xs = [p.x() for p in visible_pts.values()]
-            ys = [p.y() for p in visible_pts.values()]
-            pad = 10
-            new_rect = QtCore.QRectF(min(xs)-pad, min(ys)-pad, max(xs)-min(xs)+2*pad, max(ys)-min(ys)+2*pad)
-            self.rect_item.setRect(new_rect)
-            self.label_item.setPos(new_rect.topLeft() + QtCore.QPointF(0, -20))
 
     def rotate_pose(self, angle_delta: float):
         self.rotation_angle += angle_delta
@@ -280,7 +291,9 @@ class PoseItem(QtWidgets.QGraphicsItemGroup):
             p = ki.pos()
             kpts.append(Keypoint(x=p.x(), y=p.y(), v=ki.v, conf=None))
         r = self.rect_item.rect()
-        br = Box(r.left(), r.top(), r.right(), r.bottom(), cls=self.pose.bbox.cls, conf=self.pose.bbox.conf)
+        scene_tl = self.mapToScene(r.topLeft())
+        scene_br = self.mapToScene(r.bottomRight())
+        br = Box(scene_tl.x(), scene_tl.y(), scene_br.x(), scene_br.y(), cls=self.pose.bbox.cls, conf=self.pose.bbox.conf)
         return PoseInstance(bbox=br, kpts=kpts)
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -364,7 +377,6 @@ class MainWindow(QtWidgets.QMainWindow):
         form.addRow(self.iou_label, self.iou_spin)
         
         self.variant_combo = QtWidgets.QComboBox()
-        self.variant_combo.currentIndexChanged.connect(self._reload_current)
         self.variant_label = QtWidgets.QLabel("Variant")
         form.addRow(self.variant_label, self.variant_combo)
         
@@ -429,8 +441,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status = self.statusBar()
 
     def _on_bbox_drawn(self, rect: QtCore.QRectF):
-        if not self._images or self.cand_combo.currentIndex() < 0:
-            return
+        if not self._images or self.cand_combo.currentIndex() < 0: return
         k = self._expected_kpts if self._expected_kpts is not None else 5
         kpts = []
         cx, cy = rect.center().x(), rect.center().y()
@@ -520,7 +531,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scene.clear()
         img_path = self._images[self._idx]
         pix = QtGui.QPixmap(str(img_path))
-        self.scene.addPixmap(pix)
+        img_item = self.scene.addPixmap(pix)
+        img_item.setZValue(-100)
         self.scene.setSceneRect(pix.rect())
         poses = self._candidates[self.cand_combo.currentIndex()]
         for p in poses:
@@ -589,28 +601,49 @@ class MainWindow(QtWidgets.QMainWindow):
             selected = self.scene.selectedItems()
             if selected:
                 item = selected[0]
-                target = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
-                if target:
-                    now = time.time()
-                    if self._delete_confirm_item == target and (now - self._delete_confirm_time) < 2.0:
-                        self.scene.removeItem(target)
-                        for k in target.kpt_items: self.scene.removeItem(k)
-                        for l in target.skeleton_lines: self.scene.removeItem(l)
-                        self._delete_confirm_item = None
-                    else:
-                        self._delete_confirm_item = target
-                        self._delete_confirm_time = now
-                        self._toast("Press Delete again to confirm removal")
+                if isinstance(item, KeypointItem):
+                    item.set_visible_state(0)
+                    item.parent_pose.update_geometry()
+                    self._toast("Keypoint hidden")
+                elif isinstance(item, GuideLineItem):
+                    self.scene.removeItem(item)
+                    self._toast("Guide line removed")
+                else:
+                    target = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+                    if target:
+                        now = time.time()
+                        if self._delete_confirm_item == target and (now - self._delete_confirm_time) < 2.0:
+                            self.scene.removeItem(target)
+                            for k in target.kpt_items: self.scene.removeItem(k)
+                            for l in target.skeleton_lines: self.scene.removeItem(l)
+                            self._delete_confirm_item = None
+                        else:
+                            self._delete_confirm_item = target
+                            self._delete_confirm_time = now
+                            self._toast("Press Delete again to confirm removal")
         elif event.key() == QtCore.Qt.Key.Key_BracketLeft:
             for item in self.scene.selectedItems():
                 if isinstance(item, PoseItem): item.rotate_pose(-5)
         elif event.key() == QtCore.Qt.Key.Key_BracketRight:
             for item in self.scene.selectedItems():
                 if isinstance(item, PoseItem): item.rotate_pose(5)
-        elif event.key() == QtCore.Qt.Key.Key_L:
-            self.line_mode_chk.toggle()
         elif event.key() == QtCore.Qt.Key.Key_N:
-            self.create_mode_chk.toggle()
+            if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
+                selected = self.scene.selectedItems()
+                if selected:
+                    pose = selected[0] if isinstance(selected[0], PoseItem) else getattr(selected[0], 'parent_pose', None)
+                    if pose:
+                        for ki in pose.kpt_items:
+                            if ki.v == 0:
+                                view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
+                                scene_pos = self.view.mapToScene(view_pos)
+                                ki.setPos(scene_pos)
+                                ki.set_visible_state(2)
+                                ki.parent_pose.update_geometry()
+                                self._toast(f"Revived kpt {ki.id}")
+                                break
+            else:
+                self.create_mode_chk.toggle()
         super().keyPressEvent(event)
 
     def _toggle_lang(self):
@@ -633,9 +666,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.line_mode_chk.setText("画辅助线模式 (L)" if zh else "Draw Line Mode (L)")
         self.color_btn.setText("选取线条颜色" if zh else "Pick Line Color")
         self.shortcuts_label.setText(
-            "快捷键:\nA/D: 上一张/下一张\nS/R: 保存/拒绝\nDel: 双击删除目标\nN: 绘框模式\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转选中框" if zh else
-            "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\nDel: Double-tap delete\nN: Create mode\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate selected"
+            "快捷键:\nA/D: 上一张/下一张\nS/R: 保存/拒绝\nDel: 双击删目标 / 单击隐藏点/线\nN: 绘框模式\nShift+N: 补全缺失点\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转选中框" if zh else
+            "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\nDel: Double-tap remove / Hide point/line\nN: Create mode\nShift+N: Add missing kpt\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate selected"
         )
+
 
     def _pick_project_yaml(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select YAML", "", "YAML (*.yaml *.yml)")
@@ -678,9 +712,7 @@ class MainWindow(QtWidgets.QMainWindow):
         add("A", self._prev)
         add("Left", self._prev)
         add("S", self._accept)
-        add("UP", self._accept)
         add("R", self._reject)
-        add("DOWN", self._reject)
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
