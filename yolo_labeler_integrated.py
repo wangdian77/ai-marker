@@ -678,7 +678,9 @@ class MainWindow(QtWidgets.QMainWindow):
         add("A", self._prev)
         add("Left", self._prev)
         add("S", self._accept)
+        add("UP", self._accept)
         add("R", self._reject)
+        add("DOWN", self._reject)
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
