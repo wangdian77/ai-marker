@@ -87,6 +87,14 @@ class InteractiveView(QtWidgets.QGraphicsView):
             self.scene().addItem(self._temp_rect)
             return
 
+        if self._line_mode and event.button() == QtCore.Qt.MouseButton.RightButton:
+            if self._temp_line and self.scene():
+                self.scene().removeItem(self._temp_line)
+            self._temp_line = None
+            self._line_start = None
+            event.accept()
+            return
+
         if self._line_mode and event.button() == QtCore.Qt.MouseButton.LeftButton:
             items = self.scene().items(pos)
             for item in items:
@@ -191,9 +199,30 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
 
     def mousePressEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent):
         if event.button() == QtCore.Qt.MouseButton.RightButton:
-            new_v = 0 if self.v > 0 else 2
-            self.set_visible_state(new_v)
-            self.parent_pose.update_geometry()
+            p = self.parent_pose
+            expected = 5
+            win = self.window()
+            if hasattr(win, '_expected_kpts'):
+                attr = getattr(win, '_expected_kpts')
+                if attr is not None:
+                    expected = int(attr)
+            
+            # Count current visible points
+            visible_count = len([k for k in p.kpt_items if k.v > 0])
+            
+            if visible_count > expected:
+                # Physical remove if we have extras
+                if self in p.kpt_items:
+                    p.kpt_items.remove(self)
+                if self.scene():
+                    self.scene().removeItem(self)
+            else:
+                # Toggle hide if at or below minimum
+                self.set_visible_state(0)
+            
+            p.update_geometry()
+            event.accept()
+            return
         super().mousePressEvent(event)
 
 class GuideLineItem(QtWidgets.QGraphicsLineItem):
@@ -207,6 +236,15 @@ class GuideLineItem(QtWidgets.QGraphicsLineItem):
         if self.isSelected():
             painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 3, QtCore.Qt.PenStyle.SolidLine))
         super().paint(painter, option, widget)
+
+    def mousePressEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent):
+        if event.button() == QtCore.Qt.MouseButton.RightButton:
+            # Immediate delete on right click
+            if self.scene():
+                self.scene().removeItem(self)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 class PoseItem(QtWidgets.QGraphicsObject):
     def __init__(self, pose: PoseInstance, class_names: Dict[int, str], skeleton: Optional[List[Tuple[int, int]]] = None):
@@ -279,6 +317,13 @@ class PoseItem(QtWidgets.QGraphicsObject):
                 self.skeleton_lines.append(ln)
                 self.scene().addItem(ln)
 
+    def set_class(self, cls: int, class_names: Dict[int, str]):
+        self.pose.bbox.cls = cls
+        name = class_names.get(cls, str(cls))
+        self.label_item.setText(name)
+        # Re-center label if needed
+        self.label_item.setPos(self.rect_item.rect().left(), self.rect_item.rect().top() - 20)
+
     def rotate_pose(self, angle_delta: float):
         self.rotation_angle += angle_delta
         center = self.rect_item.rect().center()
@@ -286,10 +331,24 @@ class PoseItem(QtWidgets.QGraphicsObject):
         self.setTransform(t)
 
     def get_pose(self) -> PoseInstance:
+        expected = 5
+        win = self.window()
+        if hasattr(win, '_expected_kpts'):
+            attr = getattr(win, '_expected_kpts')
+            if attr is not None:
+                expected = int(attr)
+
+        existing_map = {ki.id: ki for ki in self.kpt_items}
+
         kpts = []
-        for ki in self.kpt_items:
-            p = ki.pos()
-            kpts.append(Keypoint(x=p.x(), y=p.y(), v=ki.v, conf=None))
+        for i in range(expected):
+            if i in existing_map:
+                ki = existing_map[i]
+                p = ki.pos()
+                kpts.append(Keypoint(x=p.x(), y=p.y(), v=ki.v, conf=None))
+            else:
+                kpts.append(Keypoint(x=0.0, y=0.0, v=0, conf=None))
+        
         r = self.rect_item.rect()
         scene_tl = self.mapToScene(r.topLeft())
         scene_br = self.mapToScene(r.bottomRight())
@@ -345,6 +404,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.project_yaml_btn.clicked.connect(self._pick_project_yaml)
         self.project_yaml_label = QtWidgets.QLabel("Project YAML")
         form.addRow(self.project_yaml_label, self._hbox(self.project_yaml_edit, self.project_yaml_btn))
+        
+        self.class_list = QtWidgets.QListWidget()
+        self.class_list.setFixedHeight(100)
+        self.class_list.currentRowChanged.connect(self._on_class_changed)
+        self.class_label = QtWidgets.QLabel("Current Class")
+        form.addRow(self.class_label, self.class_list)
         
         self.model_edit = QtWidgets.QLineEdit()
         self.model_btn = QtWidgets.QPushButton("...")
@@ -442,6 +507,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_bbox_drawn(self, rect: QtCore.QRectF):
         if not self._images or self.cand_combo.currentIndex() < 0: return
+        
+        cls_idx = max(0, self.class_list.currentRow())
+        
         k = self._expected_kpts if self._expected_kpts is not None else 5
         kpts = []
         cx, cy = rect.center().x(), rect.center().y()
@@ -460,14 +528,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 px = rect.left() + (c + 0.5) * (rw / cols)
                 py = rect.top() + (r + 0.5) * (rh / rows)
                 kpts.append(Keypoint(float(px), float(py), v=2, conf=None))
-        new_bbox = Box(rect.left(), rect.top(), rect.right(), rect.bottom(), cls=0, conf=1.0)
+        new_bbox = Box(rect.left(), rect.top(), rect.right(), rect.bottom(), cls=cls_idx, conf=1.0)
         new_pose = PoseInstance(bbox=new_bbox, kpts=kpts)
         if self._candidates is not None:
             self._candidates[self.cand_combo.currentIndex()].append(new_pose)
         item = PoseItem(new_pose, self._class_names, self._skeleton)
         item.add_to_scene(self.scene)
         item.setSelected(True)
-        self._toast("New pose created")
+        self._toast(f"New {self._class_names.get(cls_idx, cls_idx)} pose created")
+
+    def _on_class_changed(self, row: int):
+        if row < 0: return
+        # If an item is selected, update its class immediately
+        selected = self.scene.selectedItems()
+        if selected:
+            item = selected[0]
+            target = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+            if target:
+                target.set_class(row, self._class_names)
+                self.status.showMessage(f"Updated class to {self._class_names.get(row, row)}", 2000)
 
     def _init_worker(self):
         self._worker = QtCore.QProcess(self)
@@ -576,10 +655,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _accept(self):
         if not self._images or not self._output_dir: return
-        current_poses = [item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)]
+        
+        # Sync and filter: only keep objects that have at least one visible point
+        raw_poses = [item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)]
+        current_poses = [p for p in raw_poses if any(k.v > 0 for k in p.kpts)]
+        
         img_path = self._images[self._idx]
         img_raw = cv2.imread(str(img_path))
         if img_raw is not None:
+            # save_sample will write empty txt if current_poses is empty
             save_sample(img_path, img_raw, current_poses, self._output_dir / "images", self._output_dir / "labels")
         self._next()
 
@@ -597,14 +681,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.view.set_line_color(color)
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
-        if event.key() == QtCore.Qt.Key.Key_Delete or event.key() == QtCore.Qt.Key.Key_Backspace:
+        if event.key() == QtCore.Qt.Key.Key_Delete or event.key() == QtCore.Qt.Key.Key_Backspace or event.key() == QtCore.Qt.Key.Key_X:
             selected = self.scene.selectedItems()
             if selected:
                 item = selected[0]
                 if isinstance(item, KeypointItem):
-                    item.set_visible_state(0)
-                    item.parent_pose.update_geometry()
-                    self._toast("Keypoint hidden")
+                    p = item.parent_pose
+                    expected = self._expected_kpts if self._expected_kpts is not None else 5
+                    visible_count = len([k for k in p.kpt_items if k.v > 0])
+                    if visible_count > expected:
+                        if item in p.kpt_items: p.kpt_items.remove(item)
+                        self.scene.removeItem(item)
+                        self._toast("Keypoint removed")
+                    else:
+                        item.set_visible_state(0)
+                        self._toast("Keypoint hidden")
+                    p.update_geometry()
                 elif isinstance(item, GuideLineItem):
                     self.scene.removeItem(item)
                     self._toast("Guide line removed")
@@ -628,22 +720,7 @@ class MainWindow(QtWidgets.QMainWindow):
             for item in self.scene.selectedItems():
                 if isinstance(item, PoseItem): item.rotate_pose(5)
         elif event.key() == QtCore.Qt.Key.Key_N:
-            if event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier:
-                selected = self.scene.selectedItems()
-                if selected:
-                    pose = selected[0] if isinstance(selected[0], PoseItem) else getattr(selected[0], 'parent_pose', None)
-                    if pose:
-                        for ki in pose.kpt_items:
-                            if ki.v == 0:
-                                view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
-                                scene_pos = self.view.mapToScene(view_pos)
-                                ki.setPos(scene_pos)
-                                ki.set_visible_state(2)
-                                ki.parent_pose.update_geometry()
-                                self._toast(f"Revived kpt {ki.id}")
-                                break
-            else:
-                self.create_mode_chk.toggle()
+            self.create_mode_chk.toggle()
         super().keyPressEvent(event)
 
     def _toggle_lang(self):
@@ -656,6 +733,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.lang_btn.setText("English" if zh else "中文")
         self.project_yaml_label.setText("工程YAML" if zh else "Project YAML")
         self.model_label.setText("模型(.pt)" if zh else "Model (.pt)")
+        self.class_label.setText("当前类别" if zh else "Current Class")
         self.input_label.setText("输入文件夹" if zh else "Input Folder")
         self.output_label.setText("输出文件夹" if zh else "Output Folder")
         self.load_btn.setText("启动会话" if zh else "Load Session")
@@ -666,9 +744,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.line_mode_chk.setText("画辅助线模式 (L)" if zh else "Draw Line Mode (L)")
         self.color_btn.setText("选取线条颜色" if zh else "Pick Line Color")
         self.shortcuts_label.setText(
-            "快捷键:\nA/D: 上一张/下一张\nS/R: 保存/拒绝\nDel: 双击删目标 / 单击隐藏点/线\nN: 绘框模式\nShift+N: 补全缺失点\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转选中框" if zh else
-            "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\nDel: Double-tap remove / Hide point/line\nN: Create mode\nShift+N: Add missing kpt\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate selected"
+            "快捷键:\nA/D: 上/下一张\nS/R: 保存/拒绝\n1-9: 切换类别\nDel/X: 隐藏点 / 删线\n右键: 快隐点 / 快删线\n双击Del: 删整框\nN: 绘框模式\nShift+N: 补缺失点\nAlt+N: 新增关键点\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转框" if zh else
+            "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\n1-9: Switch Class\nDel/X: Hide point / Del line\nRight-Click: Fast hide/del\nDouble-Del: Remove bbox\nN: Create mode\nShift+N: Add missing kpt\nAlt+N: Add new kpt\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate"
         )
+
+
 
 
     def _pick_project_yaml(self):
@@ -679,6 +759,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._class_names = data["names"]
             self._skeleton = data["skeleton"]
             self._expected_kpts = data.get("expected_kpts", 5)
+            
+            # Populate class list
+            self.class_list.blockSignals(True)
+            self.class_list.clear()
+            for i in sorted(self._class_names.keys()):
+                self.class_list.addItem(f"{i}: {self._class_names[i]}")
+            self.class_list.setCurrentRow(0)
+            self.class_list.blockSignals(False)
 
     def _pick_model(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Model", "", "Model (*.pt)")
@@ -703,6 +791,51 @@ class MainWindow(QtWidgets.QMainWindow):
         l.addWidget(b)
         return w
 
+    def _on_alt_n(self):
+        # Add COMPLETELY NEW point at cursor
+        selected = self.scene.selectedItems()
+        if not selected:
+            return
+        item = selected[0]
+        pose = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+        if not pose:
+            return
+            
+        new_id = 0
+        if pose.kpt_items:
+            new_id = max(k.id for k in pose.kpt_items) + 1
+        
+        # Get scene pos from view's cursor
+        view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
+        scene_pos = self.view.mapToScene(view_pos)
+        
+        ki = KeypointItem(scene_pos.x(), scene_pos.y(), new_id, pose)
+        ki.set_visible_state(2)
+        pose.kpt_items.append(ki)
+        self.scene.addItem(ki)
+        pose.update_geometry()
+        self._toast(f"Added new kpt {new_id}")
+
+    def _on_shift_n(self):
+        # Revive missing kpt at cursor
+        selected = self.scene.selectedItems()
+        if not selected:
+            return
+        item = selected[0]
+        pose = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+        if not pose:
+            return
+            
+        for ki in pose.kpt_items:
+            if ki.v == 0:
+                view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
+                scene_pos = self.view.mapToScene(view_pos)
+                ki.setPos(scene_pos)
+                ki.set_visible_state(2)
+                ki.parent_pose.update_geometry()
+                self._toast(f"Revived kpt {ki.id}")
+                break
+
     def _install_shortcuts(self):
         def add(k, fn):
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
@@ -713,6 +846,16 @@ class MainWindow(QtWidgets.QMainWindow):
         add("Left", self._prev)
         add("S", self._accept)
         add("R", self._reject)
+        add("L", self.line_mode_chk.toggle)
+        add("Ctrl+L", self.line_mode_chk.toggle)
+        add("Shift+N", self._on_shift_n)
+        add("Alt+N", self._on_alt_n)
+        
+        # Class shortcuts 1-9
+        for i in range(1, 10):
+            def make_fn(idx):
+                return lambda: self.class_list.setCurrentRow(idx-1)
+            add(str(i), make_fn(i))
 
 def main():
     app = QtWidgets.QApplication(sys.argv)

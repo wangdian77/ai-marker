@@ -29,11 +29,17 @@ python yolo_labeler_integrated.py
 - `A` / `D` or `Left` / `Right`: Prev / Next Image
 - `S`: Save current annotations
 - `R`: Reject / Skip image
-- `Del` (Double-tap): Remove selected instance / Hide selected keypoint / Delete selected guide line
-- `L`: Toggle line drawing mode
-- `Ctrl + Wheel`: Zoom
-- `Space + Drag`: Pan
-- `[` / `]`: Rotate selected BBox
+- `1-9`: Switch active class (updates selected bbox immediately)
+- `Del` / `X`: Hide selected keypoint / Delete selected guide line
+- `Del` (Double-tap on bbox): Remove entire selected instance
+- `Right-Click`: Instant hide keypoint / Instant delete guide line
+- `L` or `Ctrl + L`: Toggle line drawing mode
+- `N`: Toggle bbox creation mode (Scheme A: draw box -> auto 5 pts)
+- `Shift + N`: Add/Revive next missing keypoint at cursor
+- `Alt + N`: Add a completely new keypoint at cursor
+- `Ctrl + Wheel`: Zoom in/out at cursor
+- `Space + Drag`: Pan the image
+- `[` / `]`: Rotate visual bbox aid
 
 ---
 
