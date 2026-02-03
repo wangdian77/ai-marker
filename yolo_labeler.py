@@ -319,6 +319,90 @@ def ensure_dir(p: Path) -> None:
     p.mkdir(parents=True, exist_ok=True)
 
 
+def _parse_names(names: Any) -> Dict[int, str]:
+    out: Dict[int, str] = {}
+    if isinstance(names, dict):
+        for k, v in names.items():
+            try:
+                out[int(k)] = str(v)
+            except Exception:
+                continue
+    elif isinstance(names, list):
+        for i, v in enumerate(names):
+            out[int(i)] = str(v)
+    return out
+
+
+def load_project_yaml(path: Path) -> Dict[str, Any]:
+    """Load Ultralytics-like data.yaml and optional extensions.
+
+    Supported base keys (like buff.yaml):
+    - names: {id: name} or [name]
+    - kpt_shape: [K, 3]
+
+    Optional extensions (for this tool):
+    - kpt_names: [name0, name1, ...]
+    - skeleton: [[a,b], [a,b], ...] (0-based indices)
+    - allow_classes: [0,1,...]
+    - labeler_defaults: {conf: 0.25, iou: 0.7, candidates: 6, kpt_jitter_px: 2.0, bbox_jitter_px: 1.0}
+    """
+    try:
+        import yaml
+    except Exception as e:
+        raise RuntimeError("Missing dependency: pyyaml (pip install pyyaml)") from e
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("project yaml must be a mapping/dict")
+
+    names = _parse_names(data.get("names", {}))
+
+    kpt_shape = data.get("kpt_shape", None)
+    expected_kpts: Optional[int] = None
+    if isinstance(kpt_shape, list) and len(kpt_shape) >= 1:
+        try:
+            expected_kpts = int(kpt_shape[0])
+        except Exception:
+            expected_kpts = None
+
+    kpt_names = data.get("kpt_names", None)
+    if kpt_names is not None and not isinstance(kpt_names, list):
+        raise ValueError("kpt_names must be a list")
+
+    skeleton_raw = data.get("skeleton", None)
+    skeleton: Optional[List[List[int]]] = None
+    if skeleton_raw is not None:
+        if not isinstance(skeleton_raw, list):
+            raise ValueError("skeleton must be a list")
+        skeleton = []
+        for e in skeleton_raw:
+            if isinstance(e, (list, tuple)) and len(e) == 2:
+                skeleton.append([int(e[0]), int(e[1])])
+
+    allow_classes_raw = data.get("allow_classes", None)
+    allow_classes: Optional[List[int]] = None
+    if allow_classes_raw is not None:
+        if not isinstance(allow_classes_raw, list):
+            raise ValueError("allow_classes must be a list")
+        allow_classes = [int(x) for x in allow_classes_raw]
+
+    defaults = data.get("labeler_defaults", {})
+    if defaults is None:
+        defaults = {}
+    if not isinstance(defaults, dict):
+        raise ValueError("labeler_defaults must be a dict")
+
+    return {
+        "path": str(path),
+        "names": names,
+        "expected_kpts": expected_kpts,
+        "kpt_names": kpt_names,
+        "skeleton": skeleton,
+        "allow_classes": allow_classes,
+        "defaults": defaults,
+    }
+
+
 def load_variants(path: Optional[Path]) -> List[Dict[str, Any]]:
     if path is None:
         return [

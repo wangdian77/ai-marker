@@ -1,4 +1,43 @@
-# YOLO Pose Semi-Auto Labeler
+# YOLO26-Pose Professional Labeling Tool
+
+## Integrated Version (Recommended)
+
+The integrated version (`yolo_labeler_integrated.py`) provides a professional, single-window labeling experience using `QGraphicsView`. All interactions happen directly on the main canvas without extra popups.
+
+Start:
+
+```bash
+python yolo_labeler_integrated.py
+```
+
+### Key Features (Integrated Version)
+
+- **Single Window**: Editing happens directly on the main canvas.
+- **Professional Interactions**: 
+  - `Ctrl + Wheel`: Physical zoom at cursor.
+  - `Space + Drag`: Pan the image.
+- **Interactive Items**: 
+  - Click and drag BBoxes or Keypoints directly.
+  - Right-click Keypoints to toggle visibility (`v=0` or `v=2`).
+- **BBox Rotation**: Select an instance and use `[` / `]` to rotate the visual bbox (for alignment).
+- **Manual Guide Lines**: Press `L` to toggle line mode. Click two points to draw a persistent aid line (snaps to keypoints).
+- **Safe Delete**: Select an instance and press `Delete` or `Backspace` twice to confirm removal of the entire label.
+- **Auto-Sync**: Modifications are synced back to standard YOLO pose labels upon saving.
+
+### Shortcuts (Integrated Version)
+
+- `A` / `D` or `Left` / `Right`: Prev / Next Image
+- `S`: Save current annotations
+- `R`: Reject / Skip image
+- `Del` (Double-tap): Remove selected instance
+- `L`: Toggle line drawing mode
+- `Ctrl + Wheel`: Zoom
+- `Space + Drag`: Pan
+- `[` / `]`: Rotate selected BBox
+
+---
+
+## Legacy Versions
 
 Local, human-in-the-loop labeling tool for Ultralytics YOLO pose models.
 
