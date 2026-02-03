@@ -380,6 +380,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._init_ui()
         self._init_worker()
         self._install_shortcuts()
+        self._load_settings()
         self._apply_lang()
 
     def _init_ui(self):
@@ -449,6 +450,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cand_combo.currentIndexChanged.connect(self._display_current_candidate)
         self.pick_candidate_label = QtWidgets.QLabel("Candidate")
         form.addRow(self.pick_candidate_label, self.cand_combo)
+
+        # Device selector
+        self.device_combo = QtWidgets.QComboBox()
+        self.device_combo.addItem("CPU", "cpu")
+        self.device_combo.addItem("GPU0", "cuda:0")
+        self.device_combo.currentIndexChanged.connect(self._request_restart_worker)
+        self.device_label = QtWidgets.QLabel("Device")
+        form.addRow(self.device_label, self.device_combo)
 
         self.create_mode_chk = QtWidgets.QCheckBox("Create Pose Mode (N)")
         self.create_mode_chk.stateChanged.connect(lambda s: self.view.set_create_mode(s == QtCore.Qt.CheckState.Checked.value))
@@ -553,18 +562,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self._worker.readyReadStandardOutput.connect(self._on_worker_stdout)
         self._worker_ready = False
         self._worker_buf = ""
+        self._restart_requested = False
+
+    def _request_restart_worker(self):
+        # Schedule restart after current busy task
+        self._restart_requested = True
+        if not self._busy:
+            self._restart_worker()
 
     def _restart_worker(self):
+        self._restart_requested = False
         if self._worker.state() != QtCore.QProcess.ProcessState.NotRunning:
             self._worker.terminate()
-            self._worker.waitForFinished(1000)
+            if not self._worker.waitForFinished(1000):
+                self._worker.kill()
+                self._worker.waitForFinished(500)
+        
         py = sys.executable
         script = str(Path(__file__).parent / "yolo_infer_worker.py")
         self._worker.setProgram(py)
         self._worker.setArguments([script])
         self._worker.start()
         if self._worker.waitForStarted(5000):
-            init = {"type": "init", "model": str(self._model_path), "device": "cpu"}
+            dev = "cpu"
+            if hasattr(self, "device_combo"):
+                dev = str(self.device_combo.currentData())
+            init = {"type": "init", "model": str(self._model_path), "device": dev}
             self._worker.write((json.dumps(init) + "\n").encode("utf-8"))
 
     def _on_worker_stdout(self):
@@ -584,6 +607,9 @@ class MainWindow(QtWidgets.QMainWindow):
                         self._handle_result(msg["payload"])
                     else:
                         self._toast(msg.get("error"))
+                    
+                    if self._restart_requested:
+                        self._restart_worker()
             except: pass
 
     def _handle_result(self, payload):
@@ -846,18 +872,54 @@ class MainWindow(QtWidgets.QMainWindow):
         add("Left", self._prev)
         add("S", self._accept)
         add("R", self._reject)
-        add("L", self.line_mode_chk.toggle)
-        add("Ctrl+L", self.line_mode_chk.toggle)
-        add("Shift+N", self._on_shift_n)
-        add("Alt+N", self._on_alt_n)
+
+    def _load_settings(self):
+        self._settings = QtCore.QSettings("YoloLabeler", "Integrated")
         
-        # Class shortcuts 1-9
-        for i in range(1, 10):
-            def make_fn(idx):
-                return lambda: self.class_list.setCurrentRow(idx-1)
-            add(str(i), make_fn(i))
+        m = self._settings.value("model_path", "")
+        if m: self.model_edit.setText(str(m))
+        
+        i = self._settings.value("input_dir", "")
+        if i: self.input_edit.setText(str(i))
+        
+        o = self._settings.value("output_dir", "")
+        if o: self.output_edit.setText(str(o))
+        
+        y = self._settings.value("project_yaml", "")
+        if y:
+            self.project_yaml_edit.setText(str(y))
+            # Auto-load yaml if exists
+            if Path(y).exists():
+                try:
+                    data = load_project_yaml(Path(y))
+                    self._class_names = data["names"]
+                    self._skeleton = data["skeleton"]
+                    self._expected_kpts = data.get("expected_kpts", 5)
+                    self.class_list.clear()
+                    for k in sorted(self._class_names.keys()):
+                        self.class_list.addItem(f"{k}: {self._class_names[k]}")
+                    self.class_list.setCurrentRow(0)
+                except: pass
+
+    def _save_settings(self):
+        self._settings.setValue("model_path", self.model_edit.text())
+        self._settings.setValue("input_dir", self.input_edit.text())
+        self._settings.setValue("output_dir", self.output_edit.text())
+        self._settings.setValue("project_yaml", self.project_yaml_edit.text())
+
+    def closeEvent(self, event):
+        self._save_settings()
+        self._stop_worker()
+        super().closeEvent(event)
+
+    def _stop_worker(self):
+        if self._worker.state() != QtCore.QProcess.ProcessState.NotRunning:
+            self._worker.terminate()
+            if not self._worker.waitForFinished(1000):
+                self._worker.kill()
 
 def main():
+
     app = QtWidgets.QApplication(sys.argv)
     w = MainWindow()
     w.show()

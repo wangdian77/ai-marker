@@ -30,9 +30,8 @@ python yolo_labeler_integrated.py
 - `S`: Save current annotations
 - `R`: Reject / Skip image
 - `1-9`: Switch active class (updates selected bbox immediately)
-- `Del` / `X`: Hide selected keypoint / Delete selected guide line
+- `Del` / `X` / `Right-Click`: Hide kpt (if <= expected) or Delete kpt (if > expected) / Delete line
 - `Del` (Double-tap on bbox): Remove entire selected instance
-- `Right-Click`: Instant hide keypoint / Instant delete guide line
 - `L` or `Ctrl + L`: Toggle line drawing mode
 - `N`: Toggle bbox creation mode (Scheme A: draw box -> auto 5 pts)
 - `Shift + N`: Add/Revive next missing keypoint at cursor
