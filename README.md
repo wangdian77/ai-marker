@@ -74,6 +74,12 @@ Dependencies:
 pip install ultralytics opencv-python numpy
 ```
 
+For Windows EXE packaging:
+
+```bash
+pip install pyinstaller
+```
+
 Optional (recommended):
 
 ```bash
@@ -81,6 +87,36 @@ pip install PySide6  # GUI
 pip install pyyaml   # load project YAML
 pip install pillow   # nicer Chinese text rendering in OpenCV editor (Windows)
 ```
+
+## Build EXE (Windows)
+
+This project supports PyInstaller packaging for release.
+
+### One-file release build (recommended for distribution)
+
+```bash
+# Example using your Python path
+C:/Python314/python.exe -m PyInstaller --noconfirm --clean --onefile --windowed --name ai-marker yolo_labeler_integrated.py
+```
+
+Output:
+
+- `dist/ai-marker.exe`
+
+### One-folder build (faster startup, easier debugging)
+
+```bash
+C:/Python314/python.exe -m PyInstaller --noconfirm --clean --windowed --name ai-marker yolo_labeler_integrated.py
+```
+
+Output:
+
+- `dist/ai-marker/ai-marker.exe`
+
+Notes:
+
+- One-file builds are larger and have slower first startup.
+- If both outputs exist, publish `dist/ai-marker.exe` for single-file release.
 
 ### Optional: GPU (CUDA) Support
 

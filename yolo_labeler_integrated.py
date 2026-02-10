@@ -3,6 +3,7 @@ import json
 import sys
 import traceback
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -11,7 +12,58 @@ from PySide6 import QtCore, QtGui, QtWidgets
 import numpy as np
 import cv2
 
-from yolo_labeler import Box, Keypoint, PoseInstance, load_project_yaml, load_variants, save_sample, safe_reject, copy_pose_instances, clamp_kpt, clamp_box, point_in_box, nearest_kpt, draw_overlay, LineSeg
+from yolo_labeler import (
+    Box,
+    Keypoint,
+    PoseInstance,
+    load_project_yaml,
+    load_variants,
+    save_sample,
+    safe_reject,
+    copy_pose_instances,
+    clamp_kpt,
+    clamp_box,
+    point_in_box,
+    nearest_kpt,
+    draw_overlay,
+    LineSeg,
+)
+
+THEMES: dict[str, dict[str, str]] = {
+    "dark": {
+        "bg": "#0B0D12",
+        "surface": "#141821",
+        "panel": "#171C26",
+        "input": "#11151D",
+        "text": "#F2F5FA",
+        "muted": "#A6B0C1",
+        "border": "#2A303B",
+        "primary": "#0A84FF",
+        "primary_hover": "#409CFF",
+        "success": "#30D158",
+        "danger": "#FF453A",
+        "warning": "#FFD60A",
+        "selection": "#2C4F7A",
+        "canvas": "#0A111D",
+    },
+    "light": {
+        "bg": "#F5F6F8",
+        "surface": "#FFFFFF",
+        "panel": "#F0F2F6",
+        "input": "#FFFFFF",
+        "text": "#1D1D1F",
+        "muted": "#6E6E73",
+        "border": "#D2D5DB",
+        "primary": "#0071E3",
+        "primary_hover": "#248BEB",
+        "success": "#248A3D",
+        "danger": "#D92F26",
+        "warning": "#A16207",
+        "selection": "#CFE5FF",
+        "canvas": "#E8EBF0",
+    },
+}
+
 
 @dataclass
 class SessionConfig:
@@ -28,6 +80,7 @@ class SessionConfig:
     kpt_std_px: float
     bbox_std_px: float
 
+
 def list_images(input_dir: Path) -> List[Path]:
     exts = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
     paths: List[Path] = []
@@ -38,20 +91,23 @@ def list_images(input_dir: Path) -> List[Path]:
                 paths.append(p)
     return sorted(paths)
 
+
 class InteractiveView(QtWidgets.QGraphicsView):
     zoom_changed = QtCore.Signal(float)
-    
+
     def __init__(self, parent: Optional[QtWidgets.QWidget] = None):
         super().__init__(parent)
         self.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
         self.setRenderHint(QtGui.QPainter.RenderHint.SmoothPixmapTransform)
-        self.setTransformationAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setTransformationAnchor(
+            QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse
+        )
         self.setResizeAnchor(QtWidgets.QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         self.setMouseTracking(True)
-        
+
         self._zoom_level = 1.0
         self._space_pressed = False
         self._line_mode = False
@@ -86,7 +142,11 @@ class InteractiveView(QtWidgets.QGraphicsView):
         pos = self.mapToScene(event.position().toPoint())
 
         # Penetrating hit-test priority (design doc): kpt > guide/skeleton line > small bbox > large bbox.
-        if (not self._create_mode) and (not self._line_mode) and event.button() == QtCore.Qt.MouseButton.LeftButton:
+        if (
+            (not self._create_mode)
+            and (not self._line_mode)
+            and event.button() == QtCore.Qt.MouseButton.LeftButton
+        ):
             try:
                 items = self.scene().items(pos)
                 # 2) Lines (guide or skeleton)
@@ -101,7 +161,9 @@ class InteractiveView(QtWidgets.QGraphicsView):
                 if poses:
                     target = min(
                         poses,
-                        key=lambda p: float(p.boundingRect().width() * p.boundingRect().height()),
+                        key=lambda p: float(
+                            p.boundingRect().width() * p.boundingRect().height()
+                        ),
                     )
                     self.scene().clearSelection()
                     target.setSelected(True)
@@ -114,20 +176,38 @@ class InteractiveView(QtWidgets.QGraphicsView):
             # If an instance is selected and the user draws near it, treat as overwrite.
             main_win = self.window()
             if isinstance(main_win, MainWindow):
-                sel = main_win.scene.selectedItems() if hasattr(main_win, "scene") else []
+                sel = (
+                    main_win.scene.selectedItems() if hasattr(main_win, "scene") else []
+                )
                 if sel:
                     it0 = sel[0]
-                    pose = it0 if isinstance(it0, PoseItem) else getattr(it0, "parent_pose", None)
+                    pose = (
+                        it0
+                        if isinstance(it0, PoseItem)
+                        else getattr(it0, "parent_pose", None)
+                    )
                     if isinstance(pose, PoseItem):
                         try:
                             r = pose.rect_item.rect()
                             center = pose.mapToScene(r.center())
                             size = float(max(r.width(), r.height()))
-                            dist = float(((pos.x() - center.x()) ** 2 + (pos.y() - center.y()) ** 2) ** 0.5)
+                            dist = float(
+                                (
+                                    (pos.x() - center.x()) ** 2
+                                    + (pos.y() - center.y()) ** 2
+                                )
+                                ** 0.5
+                            )
                             if dist <= 2.0 * max(1.0, size):
                                 main_win._overwrite_target = pose
                                 # Ghost the target to signal overwrite intent.
-                                pose.rect_item.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 2, QtCore.Qt.PenStyle.DashLine))
+                                pose.rect_item.setPen(
+                                    QtGui.QPen(
+                                        QtGui.QColor(255, 255, 255),
+                                        2,
+                                        QtCore.Qt.PenStyle.DashLine,
+                                    )
+                                )
                                 pose.label_item.setOpacity(0.3)
                                 for k in pose.kpt_items:
                                     k.setOpacity(0.3)
@@ -159,7 +239,7 @@ class InteractiveView(QtWidgets.QGraphicsView):
                 if isinstance(item, KeypointItem):
                     pos = item.pos()
                     break
-            
+
             if self._line_start is None:
                 self._line_start = pos
                 self._temp_line = QtWidgets.QGraphicsLineItem(QtCore.QLineF(pos, pos))
@@ -221,7 +301,9 @@ class InteractiveView(QtWidgets.QGraphicsView):
             # Default: use wheel to cycle candidates (like legacy GUI's `C`).
             main_win = self.window()
             if hasattr(main_win, "_cycle_candidate_by_wheel"):
-                getattr(main_win, "_cycle_candidate_by_wheel")(int(event.angleDelta().y()))
+                getattr(main_win, "_cycle_candidate_by_wheel")(
+                    int(event.angleDelta().y())
+                )
                 event.accept()
                 return
             super().wheelEvent(event)
@@ -238,8 +320,9 @@ class InteractiveView(QtWidgets.QGraphicsView):
             self.setDragMode(QtWidgets.QGraphicsView.DragMode.NoDrag)
         super().keyReleaseEvent(event)
 
+
 class KeypointItem(QtWidgets.QGraphicsEllipseItem):
-    def __init__(self, x: float, y: float, id: int, parent_pose: 'PoseItem'):
+    def __init__(self, x: float, y: float, id: int, parent_pose: "PoseItem"):
         # Larger hit target; keep size constant on zoom for easier dragging.
         super().__init__(-10, -10, 20, 20)
         self.setPos(x, y)
@@ -249,11 +332,13 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
         self.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.black, 1))
         self.setZValue(20)
         self.setFlags(
-            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable |
-            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges |
-            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemSendsGeometryChanges
+            | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
         )
-        self.setFlag(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setFlag(
+            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIgnoresTransformations, True
+        )
         self.setAcceptHoverEvents(True)
         self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
         self.v = 2
@@ -296,7 +381,10 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
                     value = getattr(win, "_snap_kpt_to_guides")(value)
 
                 # Optional: Alt-drag moves the whole instance.
-                if QtWidgets.QApplication.keyboardModifiers() & QtCore.Qt.KeyboardModifier.AltModifier:
+                if (
+                    QtWidgets.QApplication.keyboardModifiers()
+                    & QtCore.Qt.KeyboardModifier.AltModifier
+                ):
                     try:
                         old = self.pos()
                         new = QtCore.QPointF(value)
@@ -321,14 +409,14 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
             p = self.parent_pose
             expected = 5
             win = self.window()
-            if hasattr(win, '_expected_kpts'):
-                attr = getattr(win, '_expected_kpts')
+            if hasattr(win, "_expected_kpts"):
+                attr = getattr(win, "_expected_kpts")
                 if attr is not None:
                     expected = int(attr)
-            
+
             # Count current visible points
             visible_count = len([k for k in p.kpt_items if k.v > 0])
-            
+
             if visible_count > expected:
                 # Physical remove if we have extras
                 if self in p.kpt_items:
@@ -338,7 +426,7 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
             else:
                 # Toggle hide if at or below minimum
                 self.set_visible_state(0)
-            
+
             p.update_geometry()
             event.accept()
             return
@@ -353,16 +441,19 @@ class KeypointItem(QtWidgets.QGraphicsEllipseItem):
             self.setCursor(QtCore.Qt.CursorShape.OpenHandCursor)
         super().mouseReleaseEvent(event)
 
+
 class GuideLineItem(QtWidgets.QGraphicsLineItem):
     def __init__(self, p1: QtCore.QPointF, p2: QtCore.QPointF, color: QtGui.QColor):
         super().__init__(QtCore.QLineF(p1, p2))
         self.setPen(QtGui.QPen(color, 2, QtCore.Qt.PenStyle.DashLine))
         self.setZValue(10)
         self.setFlags(QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
-        
+
     def paint(self, painter, option, widget=None):
         if self.isSelected():
-            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 3, QtCore.Qt.PenStyle.SolidLine))
+            painter.setPen(
+                QtGui.QPen(QtCore.Qt.GlobalColor.red, 3, QtCore.Qt.PenStyle.SolidLine)
+            )
         super().paint(painter, option, widget)
 
     def mousePressEvent(self, event: QtWidgets.QGraphicsSceneMouseEvent):
@@ -398,12 +489,18 @@ class SkeletonLineItem(QtWidgets.QGraphicsLineItem):
             return
         super().mousePressEvent(event)
 
+
 class PoseItem(QtWidgets.QGraphicsObject):
-    def __init__(self, pose: PoseInstance, class_names: Dict[int, str], skeleton: Optional[List[Tuple[int, int]]] = None):
+    def __init__(
+        self,
+        pose: PoseInstance,
+        class_names: Dict[int, str],
+        skeleton: Optional[List[Tuple[int, int]]] = None,
+    ):
         super().__init__()
         self.setFlags(
-            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable |
-            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
+            QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsSelectable
+            | QtWidgets.QGraphicsItem.GraphicsItemFlag.ItemIsMovable
         )
         self.setAcceptHoverEvents(True)
         self.pose = pose
@@ -412,16 +509,18 @@ class PoseItem(QtWidgets.QGraphicsObject):
         self.rotation_angle = 0.0
         self._suspend_updates = False
         self._move_exclude: Optional[KeypointItem] = None
-        
+
         b = pose.bbox
         # Ensure annotations render above the image pixmap (which uses z=-100).
         # Hit-testing priority is handled explicitly in InteractiveView; we don't rely on z for that.
         self.setZValue(1)
-        self.rect_item = QtWidgets.QGraphicsRectItem(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1, self)
+        self.rect_item = QtWidgets.QGraphicsRectItem(
+            b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1, self
+        )
         self._base_pen = QtGui.QPen(QtGui.QColor(0, 255, 255), 2)
         self.rect_item.setPen(QtGui.QPen(self._base_pen))
         self.rect_item.setBrush(QtGui.QColor(0, 255, 255, 20))
-        
+
         name = class_names.get(b.cls, str(b.cls))
         self.label_item = QtWidgets.QGraphicsSimpleTextItem(name, self)
         self.label_item.setPos(b.x1, b.y1 - 20)
@@ -430,14 +529,14 @@ class PoseItem(QtWidgets.QGraphicsObject):
         font.setPixelSize(14)
         font.setBold(True)
         self.label_item.setFont(font)
-        
+
         self.kpt_items: List[KeypointItem] = []
         for i, kp in enumerate(pose.kpts):
             ki = KeypointItem(kp.x, kp.y, i, self)
             ki.set_visible_state(int(kp.v))
             ki.setZValue(20)
             self.kpt_items.append(ki)
-        
+
         self.skeleton_lines: List[QtWidgets.QGraphicsLineItem] = []
 
     def itemChange(self, change, value):
@@ -463,7 +562,9 @@ class PoseItem(QtWidgets.QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         if self.isSelected():
-            painter.setPen(QtGui.QPen(QtCore.Qt.GlobalColor.red, 2, QtCore.Qt.PenStyle.DashLine))
+            painter.setPen(
+                QtGui.QPen(QtCore.Qt.GlobalColor.red, 2, QtCore.Qt.PenStyle.DashLine)
+            )
             painter.drawRect(self.boundingRect())
 
     def hoverEnterEvent(self, event):
@@ -481,13 +582,13 @@ class PoseItem(QtWidgets.QGraphicsObject):
         except Exception:
             pass
         super().hoverLeaveEvent(event)
-            
+
     def add_to_scene(self, scene: QtWidgets.QGraphicsScene):
         scene.addItem(self)
         for ki in self.kpt_items:
             scene.addItem(ki)
         self.update_geometry()
-        
+
     def update_geometry(self):
         if getattr(self, "_suspend_updates", False):
             return
@@ -495,9 +596,9 @@ class PoseItem(QtWidgets.QGraphicsObject):
             if ln.scene():
                 ln.scene().removeItem(ln)
         self.skeleton_lines.clear()
-        
+
         visible_pts = {ki.id: ki.pos() for ki in self.kpt_items if ki.v > 0}
-        
+
         if self.skeleton_indices:
             for a_i, b_i in self.skeleton_indices:
                 if a_i in visible_pts and b_i in visible_pts:
@@ -506,8 +607,10 @@ class PoseItem(QtWidgets.QGraphicsObject):
                     self.scene().addItem(ln)
         else:
             ids = sorted(visible_pts.keys())
-            for i in range(len(ids)-1):
-                ln = SkeletonLineItem(visible_pts[ids[i]], visible_pts[ids[i + 1]], self)
+            for i in range(len(ids) - 1):
+                ln = SkeletonLineItem(
+                    visible_pts[ids[i]], visible_pts[ids[i + 1]], self
+                )
                 self.skeleton_lines.append(ln)
                 self.scene().addItem(ln)
 
@@ -523,19 +626,26 @@ class PoseItem(QtWidgets.QGraphicsObject):
         name = class_names.get(cls, str(cls))
         self.label_item.setText(name)
         # Re-center label if needed
-        self.label_item.setPos(self.rect_item.rect().left(), self.rect_item.rect().top() - 20)
+        self.label_item.setPos(
+            self.rect_item.rect().left(), self.rect_item.rect().top() - 20
+        )
 
     def rotate_pose(self, angle_delta: float):
         self.rotation_angle += angle_delta
         center = self.rect_item.rect().center()
-        t = QtGui.QTransform().translate(center.x(), center.y()).rotate(self.rotation_angle).translate(-center.x(), -center.y())
+        t = (
+            QtGui.QTransform()
+            .translate(center.x(), center.y())
+            .rotate(self.rotation_angle)
+            .translate(-center.x(), -center.y())
+        )
         self.setTransform(t)
 
     def get_pose(self) -> PoseInstance:
         expected = 5
         win = self.window()
-        if hasattr(win, '_expected_kpts'):
-            attr = getattr(win, '_expected_kpts')
+        if hasattr(win, "_expected_kpts"):
+            attr = getattr(win, "_expected_kpts")
             if attr is not None:
                 expected = int(attr)
 
@@ -549,11 +659,18 @@ class PoseItem(QtWidgets.QGraphicsObject):
                 kpts.append(Keypoint(x=p.x(), y=p.y(), v=ki.v, conf=None))
             else:
                 kpts.append(Keypoint(x=0.0, y=0.0, v=0, conf=None))
-        
+
         r = self.rect_item.rect()
         scene_tl = self.mapToScene(r.topLeft())
         scene_br = self.mapToScene(r.bottomRight())
-        br = Box(scene_tl.x(), scene_tl.y(), scene_br.x(), scene_br.y(), cls=self.pose.bbox.cls, conf=self.pose.bbox.conf)
+        br = Box(
+            scene_tl.x(),
+            scene_tl.y(),
+            scene_br.x(),
+            scene_br.y(),
+            cls=self.pose.bbox.cls,
+            conf=self.pose.bbox.conf,
+        )
         return PoseInstance(bbox=br, kpts=kpts)
 
     def apply_keypoints(self, kpts: List[Keypoint]) -> None:
@@ -575,13 +692,14 @@ class PoseItem(QtWidgets.QGraphicsObject):
                 self.scene().addItem(ki)
         self.update_geometry()
 
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
         self._lang = "en"
         self.setWindowTitle("YOLO Pose Integrated Labeler")
         self.resize(1600, 1000)
-        
+
         self._model_path = None
         self._input_dir = None
         self._output_dir = None
@@ -597,7 +715,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._class_names = {}
         self._skeleton = None
         self._expected_kpts = 5
-        
+
         self._delete_confirm_item = None
         self._delete_confirm_time = 0
         self._overwrite_target: Optional[PoseItem] = None
@@ -612,8 +730,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._phase_render_canvas = False
 
         self._status_progress: Optional[QtWidgets.QProgressBar] = None
-        
+
+        self._accepted_since_train = 0
+        self._resume_idx = 0
+
+        self._train_worker: Optional[QtCore.QProcess] = None
+        self._train_worker_buf = ""
+        self._train_running = False
+        self._train_inflight_id: Optional[int] = None
+        self._train_req_id = 1
+        self._train_progress_timer: Optional[QtCore.QTimer] = None
+        self._train_progress_value = 0
+        self._splitter: Optional[QtWidgets.QSplitter] = None
+        self._is_dark = True
+        self._settings_panel_visible = False
+
         self._init_ui()
+
+        self._train_progress_timer = QtCore.QTimer(self)
+        self._train_progress_timer.setInterval(900)
+        self._train_progress_timer.timeout.connect(self._on_train_progress_tick)
 
         # Keep elapsed time moving even if worker emits no new status.
         self._phase_timer = QtCore.QTimer(self)
@@ -631,64 +767,92 @@ class MainWindow(QtWidgets.QMainWindow):
         self.variant_combo.blockSignals(False)
 
         self._init_worker()
+        self._init_train_worker()
         self._install_shortcuts()
         self._load_settings()
+        self._apply_theme()
         self._apply_lang()
+
+        app = QtWidgets.QApplication.instance()
+        if isinstance(app, QtWidgets.QApplication):
+            app.aboutToQuit.connect(self._on_about_to_quit)
 
     def _init_ui(self):
         central = QtWidgets.QWidget()
         self.setCentralWidget(central)
         layout = QtWidgets.QHBoxLayout(central)
-        layout.setContentsMargins(6, 6, 6, 6)
-        
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
+        self._splitter = splitter
         layout.addWidget(splitter)
 
         sidebar = QtWidgets.QWidget()
         sidebar.setMinimumWidth(260)
         self.sidebar_layout = QtWidgets.QVBoxLayout(sidebar)
+        self.sidebar_layout.setSpacing(12)
+        self.sidebar_layout.setContentsMargins(16, 16, 16, 16)
 
         sidebar_scroll = QtWidgets.QScrollArea()
         sidebar_scroll.setWidget(sidebar)
         sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        sidebar_scroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         sidebar_scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
         sidebar_scroll.setMinimumWidth(280)
         sidebar_scroll.setMaximumWidth(520)
         splitter.addWidget(sidebar_scroll)
-        
-        form = QtWidgets.QFormLayout()
-        self.sidebar_layout.addLayout(form)
-        
+
+        self.settings_panel = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(self.settings_panel)
+
         self.lang_btn = QtWidgets.QPushButton("中文")
         self.lang_btn.clicked.connect(self._toggle_lang)
-        self.sidebar_layout.addWidget(self.lang_btn)
-        
+
+        self.theme_btn = QtWidgets.QPushButton("Theme")
+        self.theme_btn.clicked.connect(self._toggle_theme)
+
+        self.settings_toggle_btn = QtWidgets.QPushButton("Settings")
+        self.settings_toggle_btn.setObjectName("settingsToggleButton")
+        self.settings_toggle_btn.clicked.connect(self._toggle_settings_panel)
+
+        top_row = QtWidgets.QHBoxLayout()
+        top_row.addWidget(self.lang_btn)
+        top_row.addWidget(self.theme_btn)
+        top_row.addWidget(self.settings_toggle_btn)
+        self.sidebar_layout.addLayout(top_row)
+        self.sidebar_layout.addWidget(self.settings_panel)
+
         self.project_yaml_edit = QtWidgets.QLineEdit()
         self.project_yaml_btn = QtWidgets.QPushButton("...")
         self.project_yaml_btn.clicked.connect(self._pick_project_yaml)
         self.project_yaml_label = QtWidgets.QLabel("Project YAML")
-        form.addRow(self.project_yaml_label, self._hbox(self.project_yaml_edit, self.project_yaml_btn))
-        
+        form.addRow(
+            self.project_yaml_label,
+            self._hbox(self.project_yaml_edit, self.project_yaml_btn),
+        )
+
         self.class_list = QtWidgets.QListWidget()
         self.class_list.setFixedHeight(100)
         self.class_list.currentRowChanged.connect(self._on_class_changed)
         self.class_label = QtWidgets.QLabel("Current Class")
         form.addRow(self.class_label, self.class_list)
-        
+
         self.model_edit = QtWidgets.QLineEdit()
         self.model_btn = QtWidgets.QPushButton("...")
         self.model_btn.clicked.connect(self._pick_model)
         self.model_label = QtWidgets.QLabel("Model (.pt)")
         form.addRow(self.model_label, self._hbox(self.model_edit, self.model_btn))
-        
+
         self.input_edit = QtWidgets.QLineEdit()
         self.input_btn = QtWidgets.QPushButton("...")
         self.input_btn.clicked.connect(self._pick_input)
         self.input_label = QtWidgets.QLabel("Input Folder")
         form.addRow(self.input_label, self._hbox(self.input_edit, self.input_btn))
-        
+
         self.output_edit = QtWidgets.QLineEdit()
         self.output_btn = QtWidgets.QPushButton("...")
         self.output_btn.clicked.connect(self._pick_output)
@@ -699,14 +863,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rejected_btn = QtWidgets.QPushButton("...")
         self.rejected_btn.clicked.connect(self._pick_rejected)
         self.rejected_label = QtWidgets.QLabel("Rejected Folder")
-        form.addRow(self.rejected_label, self._hbox(self.rejected_edit, self.rejected_btn))
-        
+        form.addRow(
+            self.rejected_label, self._hbox(self.rejected_edit, self.rejected_btn)
+        )
+
         self.conf_spin = QtWidgets.QDoubleSpinBox()
         self.conf_spin.setRange(0.0, 1.0)
         self.conf_spin.setValue(0.25)
         self.conf_label = QtWidgets.QLabel("Conf")
         form.addRow(self.conf_label, self.conf_spin)
-        
+
         self.iou_spin = QtWidgets.QDoubleSpinBox()
         self.iou_spin.setRange(0.0, 1.0)
         self.iou_spin.setValue(0.70)
@@ -717,15 +883,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.skip_chk.setChecked(True)
         self.sidebar_layout.addWidget(self.skip_chk)
 
-        self.delete_chk = QtWidgets.QCheckBox("Delete rejected input images (DANGEROUS)")
+        self.delete_chk = QtWidgets.QCheckBox(
+            "Delete rejected input images (DANGEROUS)"
+        )
         self.delete_chk.setChecked(False)
         self.sidebar_layout.addWidget(self.delete_chk)
-        
+
         self.variant_combo = QtWidgets.QComboBox()
         self.variant_combo.currentIndexChanged.connect(self._reload_current)
         self.variant_label = QtWidgets.QLabel("Variant")
         form.addRow(self.variant_label, self.variant_combo)
-        
+
         self.cand_combo = QtWidgets.QComboBox()
         self.cand_combo.currentIndexChanged.connect(self._display_current_candidate)
         self.pick_candidate_label = QtWidgets.QLabel("Candidate")
@@ -735,7 +903,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.num_candidates_spin.setRange(1, 20)
         self.num_candidates_spin.setValue(6)
         self.num_candidates_spin.valueChanged.connect(self._reload_current)
-        form.addRow(QtWidgets.QLabel("Candidates"), self.num_candidates_spin)
+        self.candidates_label = QtWidgets.QLabel("Candidates")
+        form.addRow(self.candidates_label, self.num_candidates_spin)
 
         self.kpt_std_spin = QtWidgets.QDoubleSpinBox()
         self.kpt_std_spin.setRange(0.0, 50.0)
@@ -743,7 +912,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.kpt_std_spin.setSingleStep(0.5)
         self.kpt_std_spin.setValue(2.0)
         self.kpt_std_spin.valueChanged.connect(self._reload_current)
-        form.addRow(QtWidgets.QLabel("Kpt Jitter (px)"), self.kpt_std_spin)
+        self.kpt_std_label = QtWidgets.QLabel("Kpt Jitter (px)")
+        form.addRow(self.kpt_std_label, self.kpt_std_spin)
 
         self.bbox_std_spin = QtWidgets.QDoubleSpinBox()
         self.bbox_std_spin.setRange(0.0, 50.0)
@@ -751,16 +921,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bbox_std_spin.setSingleStep(0.5)
         self.bbox_std_spin.setValue(1.0)
         self.bbox_std_spin.valueChanged.connect(self._reload_current)
-        form.addRow(QtWidgets.QLabel("BBox Jitter (px)"), self.bbox_std_spin)
+        self.bbox_std_label = QtWidgets.QLabel("BBox Jitter (px)")
+        form.addRow(self.bbox_std_label, self.bbox_std_spin)
 
         self.seed_spin = QtWidgets.QSpinBox()
         self.seed_spin.setRange(0, 2**31 - 1)
         self.seed_spin.setValue(0)
         self.seed_spin.valueChanged.connect(self._reload_current)
-        form.addRow(QtWidgets.QLabel("Seed"), self.seed_spin)
+        self.seed_label = QtWidgets.QLabel("Seed")
+        form.addRow(self.seed_label, self.seed_spin)
 
         self.reroll_btn = QtWidgets.QPushButton("Re-roll")
-        self.reroll_btn.clicked.connect(lambda: self.seed_spin.setValue(int(self.seed_spin.value()) + 1))
+        self.reroll_btn.clicked.connect(
+            lambda: self.seed_spin.setValue(int(self.seed_spin.value()) + 1)
+        )
         self.sidebar_layout.addWidget(self.reroll_btn)
 
         # Device selector
@@ -771,24 +945,131 @@ class MainWindow(QtWidgets.QMainWindow):
         self.device_label = QtWidgets.QLabel("Device")
         form.addRow(self.device_label, self.device_combo)
 
+        self.auto_train_chk = QtWidgets.QCheckBox("Auto Train")
+        self.auto_train_chk.setChecked(False)
+        self.sidebar_layout.addWidget(self.auto_train_chk)
+
+        self.train_threshold_spin = QtWidgets.QSpinBox()
+        self.train_threshold_spin.setRange(1, 1000000)
+        self.train_threshold_spin.setValue(200)
+        self.train_threshold_label = QtWidgets.QLabel("Train Threshold")
+        form.addRow(self.train_threshold_label, self.train_threshold_spin)
+
+        self.train_data_edit = QtWidgets.QLineEdit()
+        self.train_data_btn = QtWidgets.QPushButton("...")
+        self.train_data_btn.clicked.connect(self._pick_train_data)
+        self.train_data_label = QtWidgets.QLabel("Train Data YAML")
+        form.addRow(
+            self.train_data_label, self._hbox(self.train_data_edit, self.train_data_btn)
+        )
+
+        self.train_model_edit = QtWidgets.QLineEdit()
+        self.train_model_btn = QtWidgets.QPushButton("...")
+        self.train_model_btn.clicked.connect(self._pick_train_model)
+        self.train_model_label = QtWidgets.QLabel("Train Base Model")
+        form.addRow(
+            self.train_model_label,
+            self._hbox(self.train_model_edit, self.train_model_btn),
+        )
+
+        self.train_project_edit = QtWidgets.QLineEdit()
+        self.train_project_btn = QtWidgets.QPushButton("...")
+        self.train_project_btn.clicked.connect(self._pick_train_project)
+        self.train_project_label = QtWidgets.QLabel("Train Output Dir")
+        form.addRow(
+            self.train_project_label,
+            self._hbox(self.train_project_edit, self.train_project_btn),
+        )
+
+        self.train_name_edit = QtWidgets.QLineEdit("auto")
+        self.train_name_label = QtWidgets.QLabel("Train Run Name")
+        form.addRow(self.train_name_label, self.train_name_edit)
+
+        self.train_epochs_spin = QtWidgets.QSpinBox()
+        self.train_epochs_spin.setRange(1, 10000)
+        self.train_epochs_spin.setValue(100)
+        self.train_epochs_label = QtWidgets.QLabel("Train Epochs")
+        form.addRow(self.train_epochs_label, self.train_epochs_spin)
+
+        self.train_imgsz_spin = QtWidgets.QSpinBox()
+        self.train_imgsz_spin.setRange(64, 4096)
+        self.train_imgsz_spin.setSingleStep(32)
+        self.train_imgsz_spin.setValue(640)
+        self.train_imgsz_label = QtWidgets.QLabel("Train ImgSz")
+        form.addRow(self.train_imgsz_label, self.train_imgsz_spin)
+
+        self.train_batch_spin = QtWidgets.QSpinBox()
+        self.train_batch_spin.setRange(1, 1024)
+        self.train_batch_spin.setValue(16)
+        self.train_batch_label = QtWidgets.QLabel("Train Batch")
+        form.addRow(self.train_batch_label, self.train_batch_spin)
+
+        self.train_device_combo = QtWidgets.QComboBox()
+        self.train_device_combo.addItem("CPU", "cpu")
+        self.train_device_combo.addItem("GPU0", "0")
+        self.train_device_label = QtWidgets.QLabel("Train Device")
+        form.addRow(self.train_device_label, self.train_device_combo)
+
+        self.train_now_btn = QtWidgets.QPushButton("Run Training Now")
+        self.train_now_btn.setObjectName("trainNowButton")
+        self.train_now_btn.clicked.connect(lambda: self._start_training(manual=True))
+
+        self.train_stop_btn = QtWidgets.QPushButton("Stop Training")
+        self.train_stop_btn.setObjectName("trainStopButton")
+        self.train_stop_btn.clicked.connect(self._stop_training_request)
+        self.train_stop_btn.setEnabled(False)
+
+        self.train_status_label = QtWidgets.QLabel("Train: idle")
+        self.train_status_label.setWordWrap(True)
+        self.train_status_label.setObjectName("trainStatusLabel")
+        self.sidebar_layout.addWidget(self.train_status_label)
+
+        self.train_progress = QtWidgets.QProgressBar()
+        self.train_progress.setObjectName("trainProgressBar")
+        self.train_progress.setRange(0, 100)
+        self.train_progress.setValue(0)
+        self.train_progress.setFormat("0%")
+        self.sidebar_layout.addWidget(self.train_progress)
+
+        self.accept_counter_label = QtWidgets.QLabel("Accepted since last train: 0")
+        self.accept_counter_label.setObjectName("acceptCounterLabel")
+        self.sidebar_layout.addWidget(self.accept_counter_label)
+
+        self._settings_extra_widgets = [
+            self.skip_chk,
+            self.delete_chk,
+            self.auto_train_chk,
+            self.reroll_btn,
+        ]
+        self._set_settings_panel_visible(False)
+
         self.create_mode_chk = QtWidgets.QCheckBox("Create Pose Mode (N)")
-        self.create_mode_chk.stateChanged.connect(lambda s: self.view.set_create_mode(s == QtCore.Qt.CheckState.Checked.value))
+        self.create_mode_chk.stateChanged.connect(
+            lambda s: self.view.set_create_mode(s == QtCore.Qt.CheckState.Checked.value)
+        )
         self.sidebar_layout.addWidget(self.create_mode_chk)
 
         self.line_mode_chk = QtWidgets.QCheckBox("Draw Line Mode (L)")
-        self.line_mode_chk.stateChanged.connect(lambda s: self.view.set_line_mode(s == QtCore.Qt.CheckState.Checked.value))
+        self.line_mode_chk.stateChanged.connect(
+            lambda s: self.view.set_line_mode(s == QtCore.Qt.CheckState.Checked.value)
+        )
         self.sidebar_layout.addWidget(self.line_mode_chk)
 
         self.color_btn = QtWidgets.QPushButton("Pick Line Color")
         self.color_btn.clicked.connect(self._pick_line_color)
         self.sidebar_layout.addWidget(self.color_btn)
-        
+
+        self.actions_group = QtWidgets.QGroupBox("Actions")
+        self.actions_group.setObjectName("actionsGroup")
+        actions_layout = QtWidgets.QVBoxLayout(self.actions_group)
+        actions_layout.setSpacing(8)
+
         btn_row = QtWidgets.QHBoxLayout()
         self.load_btn = QtWidgets.QPushButton("Load Session")
         self.load_btn.clicked.connect(self._load_session)
         btn_row.addWidget(self.load_btn)
-        self.sidebar_layout.addLayout(btn_row)
-        
+        actions_layout.addLayout(btn_row)
+
         nav_row = QtWidgets.QHBoxLayout()
         self.prev_btn = QtWidgets.QPushButton("Prev (A)")
         self.prev_btn.clicked.connect(self._prev)
@@ -796,38 +1077,48 @@ class MainWindow(QtWidgets.QMainWindow):
         self.next_btn.clicked.connect(self._next)
         nav_row.addWidget(self.prev_btn)
         nav_row.addWidget(self.next_btn)
-        self.sidebar_layout.addLayout(nav_row)
-        
+        actions_layout.addLayout(nav_row)
+
         act_row = QtWidgets.QHBoxLayout()
         self.accept_btn = QtWidgets.QPushButton("Save (S)")
-        self.accept_btn.setStyleSheet("background-color: #2e7d32; color: white; font-weight: bold;")
+        self.accept_btn.setObjectName("acceptButton")
         self.accept_btn.clicked.connect(self._accept)
         self.reject_btn = QtWidgets.QPushButton("Reject (R)")
+        self.reject_btn.setObjectName("rejectButton")
         self.reject_btn.clicked.connect(self._reject)
         act_row.addWidget(self.accept_btn)
         act_row.addWidget(self.reject_btn)
-        self.sidebar_layout.addLayout(act_row)
-        
+        actions_layout.addLayout(act_row)
+
         self.clear_btn = QtWidgets.QPushButton("Clear Marks (Del)")
         self.clear_btn.clicked.connect(self._clear_all_marks)
-        self.sidebar_layout.addWidget(self.clear_btn)
-        
+        actions_layout.addWidget(self.clear_btn)
+
+        train_row = QtWidgets.QHBoxLayout()
+        train_row.addWidget(self.train_now_btn)
+        train_row.addWidget(self.train_stop_btn)
+        actions_layout.addLayout(train_row)
+
+        self.sidebar_layout.addWidget(self.actions_group)
+
         self.sidebar_layout.addStretch(1)
         self.shortcuts_label = QtWidgets.QLabel()
         self.shortcuts_label.setWordWrap(True)
-        self.shortcuts_label.setStyleSheet("color: #aaa; background: #333; padding: 5px;")
+        self.shortcuts_label.setObjectName("shortcutsLabel")
         self.sidebar_layout.addWidget(self.shortcuts_label)
-        
+
         self.scene = QtWidgets.QGraphicsScene()
         self.view = InteractiveView()
         self.view.setScene(self.scene)
-        self.view.setBackgroundBrush(QtGui.QBrush(QtGui.QColor(30, 30, 30)))
+        self.view.setBackgroundBrush(
+            QtGui.QBrush(QtGui.QColor(THEMES["dark"]["canvas"]))
+        )
         self.view.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         splitter.addWidget(self.view)
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([320, 1200])
-        
+
         self.status = self.statusBar()
 
         self._status_progress = QtWidgets.QProgressBar()
@@ -848,6 +1139,238 @@ class MainWindow(QtWidgets.QMainWindow):
             self._status_progress.hide()
             self._phase_base_msg = ""
 
+    def _set_train_status(self, msg: str) -> None:
+        self.train_status_label.setText(str(msg))
+        self.status.showMessage(str(msg), 5000)
+
+        theme = THEMES["dark" if self._is_dark else "light"]
+        msg_l = str(msg).lower()
+        color = theme["muted"]
+        border = theme["border"]
+        if "running" in msg_l or "training" in msg_l or "loading" in msg_l:
+            color = theme["warning"]
+            border = theme["warning"]
+        elif "success" in msg_l or "ready" in msg_l:
+            color = theme["success"]
+            border = theme["success"]
+        elif "fail" in msg_l or "error" in msg_l:
+            color = theme["danger"]
+            border = theme["danger"]
+
+        self.train_status_label.setStyleSheet(
+            f"padding: 8px; border-radius: 10px; background: {theme['input']}; border: 1px solid {border}; color: {color}; font-weight: 600;"
+        )
+
+    def _on_train_progress_tick(self) -> None:
+        if not self._train_running:
+            return
+        if self.train_progress.value() < 95:
+            self._train_progress_value = min(95, self.train_progress.value() + 1)
+            self.train_progress.setValue(self._train_progress_value)
+            self.train_progress.setFormat(f"{self._train_progress_value}%")
+
+    def _set_train_running_state(self, running: bool) -> None:
+        self._train_running = bool(running)
+        self.train_now_btn.setEnabled(not running)
+        self.train_stop_btn.setEnabled(running)
+        if running:
+            self._train_progress_value = 0
+            self.train_progress.setValue(0)
+            self.train_progress.setFormat("0%")
+            if self._train_progress_timer is not None:
+                self._train_progress_timer.start()
+        else:
+            if self._train_progress_timer is not None:
+                self._train_progress_timer.stop()
+
+    def _stop_training_request(self) -> None:
+        if not self._train_running:
+            self._toast("No running training job")
+            return
+        if self._train_worker is not None:
+            self._train_worker.terminate()
+            if not self._train_worker.waitForFinished(1200):
+                self._train_worker.kill()
+                self._train_worker.waitForFinished(800)
+        self._train_worker_buf = ""
+        self._train_inflight_id = None
+        self._set_train_running_state(False)
+        self.train_progress.setValue(0)
+        self.train_progress.setFormat("stopped")
+        self._set_train_status(
+            "Train: stopped" if self._lang == "en" else "训练状态: 已停止"
+        )
+
+    def _toggle_theme(self) -> None:
+        self._is_dark = not self._is_dark
+        self._apply_theme()
+        self._apply_lang()
+        self._save_settings()
+
+    def _update_settings_toggle_text(self) -> None:
+        zh = self._lang == "zh"
+        arrow = "▼" if self._settings_panel_visible else "▶"
+        if zh:
+            self.settings_toggle_btn.setText(f"设置 {arrow}")
+        else:
+            self.settings_toggle_btn.setText(f"Settings {arrow}")
+
+    def _set_settings_panel_visible(self, visible: bool) -> None:
+        self._settings_panel_visible = bool(visible)
+        self.settings_panel.setVisible(self._settings_panel_visible)
+        for w in getattr(self, "_settings_extra_widgets", []):
+            w.setVisible(self._settings_panel_visible)
+        self._update_settings_toggle_text()
+
+    def _toggle_settings_panel(self) -> None:
+        self._set_settings_panel_visible(not self._settings_panel_visible)
+        self._save_settings()
+
+    def _apply_theme(self) -> None:
+        theme = THEMES["dark" if self._is_dark else "light"]
+
+        app = QtWidgets.QApplication.instance()
+        if isinstance(app, QtWidgets.QApplication):
+            app.setStyle("Fusion")
+            palette = QtGui.QPalette()
+            palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(theme["bg"]))
+            palette.setColor(
+                QtGui.QPalette.ColorRole.WindowText, QtGui.QColor(theme["text"])
+            )
+            palette.setColor(
+                QtGui.QPalette.ColorRole.Base, QtGui.QColor(theme["input"])
+            )
+            palette.setColor(
+                QtGui.QPalette.ColorRole.AlternateBase,
+                QtGui.QColor(theme["surface"]),
+            )
+            palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor(theme["text"]))
+            palette.setColor(
+                QtGui.QPalette.ColorRole.Button, QtGui.QColor(theme["surface"])
+            )
+            palette.setColor(
+                QtGui.QPalette.ColorRole.ButtonText, QtGui.QColor(theme["text"])
+            )
+            palette.setColor(
+                QtGui.QPalette.ColorRole.Highlight, QtGui.QColor(theme["selection"])
+            )
+            palette.setColor(
+                QtGui.QPalette.ColorRole.HighlightedText,
+                QtGui.QColor(theme["text"]),
+            )
+            app.setPalette(palette)
+
+        self.view.setBackgroundBrush(QtGui.QBrush(QtGui.QColor(theme["canvas"])))
+
+        css = f"""
+            QMainWindow {{ background: {theme["bg"]}; }}
+            QWidget {{
+                font-family: "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+                font-size: 13px;
+                color: {theme["text"]};
+            }}
+            QScrollArea {{ border: none; background: {theme["panel"]}; }}
+            QSplitter::handle {{ background: {theme["border"]}; width: 1px; }}
+
+            QGroupBox#actionsGroup {{
+                background: {theme["surface"]};
+                border: 1px solid {theme["border"]};
+                border-radius: 12px;
+                margin-top: 14px;
+                padding: 10px 10px 10px 10px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            QGroupBox#actionsGroup::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 6px;
+                color: {theme["muted"]};
+            }}
+
+            QLabel {{ color: {theme["text"]}; }}
+            QFormLayout QLabel {{ font-size: 12px; color: {theme["muted"]}; }}
+
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QListWidget {{
+                background: {theme["input"]};
+                border: 1px solid {theme["border"]};
+                border-radius: 10px;
+                padding: 6px;
+            }}
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{
+                border: 1px solid {theme["primary"]};
+            }}
+
+            QPushButton {{
+                background: {theme["surface"]};
+                border: 1px solid {theme["border"]};
+                border-radius: 10px;
+                padding: 7px 10px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ border: 1px solid {theme["primary"]}; }}
+
+            QPushButton#acceptButton {{
+                background: {theme["success"]};
+                color: #FFFFFF;
+                border: 1px solid {theme["success"]};
+            }}
+            QPushButton#rejectButton {{
+                background: {theme["surface"]};
+                color: {theme["danger"]};
+                border: 1px solid {theme["danger"]};
+            }}
+            QPushButton#trainNowButton {{
+                background: {theme["primary"]};
+                color: #FFFFFF;
+                border: 1px solid {theme["primary"]};
+            }}
+            QPushButton#trainStopButton {{
+                background: {theme["surface"]};
+                color: {theme["danger"]};
+                border: 1px solid {theme["danger"]};
+            }}
+            QPushButton#trainStopButton:disabled {{
+                color: {theme["muted"]};
+                border: 1px solid {theme["border"]};
+            }}
+            QPushButton#settingsToggleButton {{
+                background: {theme["panel"]};
+                border: 1px solid {theme["border"]};
+                color: {theme["text"]};
+                font-weight: 700;
+            }}
+
+            QProgressBar#trainProgressBar {{
+                background: {theme["input"]};
+                border: 1px solid {theme["border"]};
+                border-radius: 9px;
+                text-align: center;
+                min-height: 18px;
+                color: {theme["text"]};
+            }}
+            QProgressBar#trainProgressBar::chunk {{
+                background: {theme["primary"]};
+                border-radius: 8px;
+            }}
+
+            QLabel#acceptCounterLabel, QLabel#shortcutsLabel {{
+                background: {theme["input"]};
+                border: 1px solid {theme["border"]};
+                border-radius: 10px;
+                padding: 8px;
+                color: {theme["muted"]};
+            }}
+            QLabel#shortcutsLabel {{
+                font-family: "Consolas", "Courier New", monospace;
+                font-size: 12px;
+            }}
+        """
+        self.setStyleSheet(css)
+
+        self._set_train_status(self.train_status_label.text())
+        self._update_accept_counter_label()
+
     def _on_phase_tick(self) -> None:
         if self._status_progress is None or (not self._status_progress.isVisible()):
             return
@@ -860,7 +1383,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.status.showMessage(label)
         # Also update the on-canvas placeholder so users see progress.
         try:
-            if self._placeholder_item is not None and self._placeholder_item.scene() is not None:
+            if (
+                self._placeholder_item is not None
+                and self._placeholder_item.scene() is not None
+            ):
                 self._placeholder_item.setPlainText(label)
                 br = self._placeholder_item.boundingRect()
                 self.scene.setSceneRect(
@@ -892,7 +1418,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _render_placeholder(self, msg: str) -> None:
         # Don't clear the scene while user is actively drawing.
         try:
-            if getattr(self.view, "_temp_rect", None) is not None or getattr(self.view, "_temp_line", None) is not None:
+            if (
+                getattr(self.view, "_temp_rect", None) is not None
+                or getattr(self.view, "_temp_line", None) is not None
+            ):
                 self.status.showMessage(str(msg))
                 return
         except Exception:
@@ -907,9 +1436,16 @@ class MainWindow(QtWidgets.QMainWindow):
         t.setZValue(0)
         # center in view
         br = t.boundingRect()
-        self.scene.setSceneRect(0, 0, max(800, int(br.width() + 60)), max(600, int(br.height() + 60)))
-        t.setPos((self.scene.sceneRect().width() - br.width()) / 2.0, (self.scene.sceneRect().height() - br.height()) / 2.0)
-        self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
+        self.scene.setSceneRect(
+            0, 0, max(800, int(br.width() + 60)), max(600, int(br.height() + 60))
+        )
+        t.setPos(
+            (self.scene.sceneRect().width() - br.width()) / 2.0,
+            (self.scene.sceneRect().height() - br.height()) / 2.0,
+        )
+        self.view.fitInView(
+            self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
 
     def _display_image_only(self) -> None:
         self._phase_render_canvas = False
@@ -926,10 +1462,16 @@ class MainWindow(QtWidgets.QMainWindow):
         img_item = self.scene.addPixmap(pix)
         img_item.setZValue(-100)
         self.scene.setSceneRect(pix.rect())
-        self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-        self.status.showMessage(f"Image {self._idx + 1}/{len(self._images)}: {img_path.name}")
+        self.view.fitInView(
+            self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
+        self.status.showMessage(
+            f"Image {self._idx + 1}/{len(self._images)}: {img_path.name}"
+        )
 
-    def _remove_pose_from_current_candidate(self, bbox_xyxy: Tuple[float, float, float, float]) -> None:
+    def _remove_pose_from_current_candidate(
+        self, bbox_xyxy: Tuple[float, float, float, float]
+    ) -> None:
         if not self._candidates or self.cand_combo.currentIndex() < 0:
             return
         idx = int(self.cand_combo.currentIndex())
@@ -938,7 +1480,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         x1, y1, x2, y2 = bbox_xyxy
 
-        def _iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+        def _iou(
+            a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]
+        ) -> float:
             ax1, ay1, ax2, ay2 = a
             bx1, by1, bx2, by2 = b
             ix1 = max(ax1, bx1)
@@ -975,20 +1519,27 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
     def _on_bbox_drawn(self, rect: QtCore.QRectF):
-        if not self._images or self.cand_combo.currentIndex() < 0: return
+        if not self._images or self.cand_combo.currentIndex() < 0:
+            return
 
         self._push_undo()
-        
+
         cls_idx = max(0, self.class_list.currentRow())
-        
+
         # If overwrite is active, do a region inference to regenerate keypoints.
-        if self._overwrite_target is not None and self._worker_ready and (not self._busy):
+        if (
+            self._overwrite_target is not None
+            and self._worker_ready
+            and (not self._busy)
+        ):
             old = self._overwrite_target
             self._overwrite_target = None
 
             try:
                 op = old.get_pose()
-                self._remove_pose_from_current_candidate((op.bbox.x1, op.bbox.y1, op.bbox.x2, op.bbox.y2))
+                self._remove_pose_from_current_candidate(
+                    (op.bbox.x1, op.bbox.y1, op.bbox.x2, op.bbox.y2)
+                )
             except Exception:
                 pass
 
@@ -1022,11 +1573,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 "type": "infer_region",
                 "id": req_id,
                 "image": str(img_path),
-                "bbox": [float(rect.left()), float(rect.top()), float(rect.right()), float(rect.bottom())],
+                "bbox": [
+                    float(rect.left()),
+                    float(rect.top()),
+                    float(rect.right()),
+                    float(rect.bottom()),
+                ],
                 "expand": 0.2,
                 "conf": float(self.conf_spin.value()),
                 "iou": float(self.iou_spin.value()),
-                "expected_kpts": int(self._expected_kpts) if self._expected_kpts is not None else None,
+                "expected_kpts": int(self._expected_kpts)
+                if self._expected_kpts is not None
+                else None,
             }
             self._worker.write((json.dumps(msg) + "\n").encode("utf-8"))
             self._toast("Overwrite relabel: running local inference...")
@@ -1057,7 +1615,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 py = rect.top() + (r + 0.5) * (rh / rows)
                 kpts.append(Keypoint(float(px), float(py), v=2, conf=None))
 
-        new_bbox = Box(rect.left(), rect.top(), rect.right(), rect.bottom(), cls=cls_idx, conf=1.0)
+        new_bbox = Box(
+            rect.left(), rect.top(), rect.right(), rect.bottom(), cls=cls_idx, conf=1.0
+        )
         new_pose = PoseInstance(bbox=new_bbox, kpts=kpts)
         if self._candidates is not None:
             self._candidates[self.cand_combo.currentIndex()].append(new_pose)
@@ -1067,22 +1627,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._toast(f"New {self._class_names.get(cls_idx, cls_idx)} pose created")
 
     def _on_class_changed(self, row: int):
-        if row < 0: return
+        if row < 0:
+            return
         # If an item is selected, update its class immediately
         selected = self.scene.selectedItems()
         if selected:
             item = selected[0]
-            target = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+            target = (
+                item
+                if isinstance(item, PoseItem)
+                else getattr(item, "parent_pose", None)
+            )
             if target:
                 target.set_class(row, self._class_names)
-                self.status.showMessage(f"Updated class to {self._class_names.get(row, row)}", 2000)
+                self.status.showMessage(
+                    f"Updated class to {self._class_names.get(row, row)}", 2000
+                )
 
     def _init_worker(self):
         self._worker = QtCore.QProcess(self)
         # IMPORTANT: ultralytics/torch may write to stderr during import/init.
         # If stderr is not drained, the child process can block when the pipe buffer fills.
         # Merge channels so we always drain output from a single reader.
-        self._worker.setProcessChannelMode(QtCore.QProcess.ProcessChannelMode.MergedChannels)
+        self._worker.setProcessChannelMode(
+            QtCore.QProcess.ProcessChannelMode.MergedChannels
+        )
         self._worker.readyReadStandardOutput.connect(self._on_worker_stdout)
         self._worker_ready = False
         self._worker_buf = ""
@@ -1110,11 +1679,17 @@ class MainWindow(QtWidgets.QMainWindow):
             if not self._worker.waitForFinished(1000):
                 self._worker.kill()
                 self._worker.waitForFinished(500)
-        
+
         py = sys.executable
-        script = str((Path(__file__).parent / "worker" / "infer_worker.py").resolve())
+        if getattr(sys, "frozen", False):
+            args = ["--worker", "infer"]
+        else:
+            script = str(
+                (Path(__file__).parent / "worker" / "infer_worker.py").resolve()
+            )
+            args = [script]
         self._worker.setProgram(py)
-        self._worker.setArguments([script])
+        self._worker.setArguments(args)
         self._worker.setWorkingDirectory(str(Path(__file__).parent))
 
         self._phase_t0 = time.time()
@@ -1159,7 +1734,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 elif msg.get("type") == "result":
                     rid = msg.get("id")
                     kind = msg.get("kind", "infer")
-                    if self._inflight_id is not None and rid is not None and int(rid) != int(self._inflight_id):
+                    if (
+                        self._inflight_id is not None
+                        and rid is not None
+                        and int(rid) != int(self._inflight_id)
+                    ):
                         continue
 
                     self._busy = False
@@ -1180,10 +1759,11 @@ class MainWindow(QtWidgets.QMainWindow):
                         else:
                             # Show the image even if inference failed.
                             self._display_image_only()
-                    
+
                     if self._restart_requested:
                         self._restart_worker()
-            except: pass
+            except:
+                pass
 
     def _handle_infer_region_failed(self) -> None:
         if not self._pending_region:
@@ -1201,7 +1781,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     sel = self.scene.selectedItems()
                     if sel:
                         it0 = sel[0]
-                        pose = it0 if isinstance(it0, PoseItem) else getattr(it0, "parent_pose", None)
+                        pose = (
+                            it0
+                            if isinstance(it0, PoseItem)
+                            else getattr(it0, "parent_pose", None)
+                        )
                         if isinstance(pose, PoseItem):
                             pose.set_class(cls_idx, self._class_names)
             except Exception:
@@ -1218,15 +1802,27 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = str(self._pending_region.get("mode", "overwrite"))
 
         def _parse_kpts(pd: Dict[str, Any]) -> List[Keypoint]:
-            expected = int(self._expected_kpts) if self._expected_kpts is not None else 5
+            expected = (
+                int(self._expected_kpts) if self._expected_kpts is not None else 5
+            )
             kpts_raw = pd.get("kpts", [])
             kpts: List[Keypoint] = []
             for k in kpts_raw:
                 if not (isinstance(k, list) and len(k) >= 3):
                     continue
-                kpts.append(Keypoint(float(k[0]), float(k[1]), v=int(k[2]), conf=(None if len(k) < 4 else k[3])))
+                kpts.append(
+                    Keypoint(
+                        float(k[0]),
+                        float(k[1]),
+                        v=int(k[2]),
+                        conf=(None if len(k) < 4 else k[3]),
+                    )
+                )
             if len(kpts) < expected:
-                kpts = kpts + [Keypoint(0.0, 0.0, v=0, conf=None) for _ in range(expected - len(kpts))]
+                kpts = kpts + [
+                    Keypoint(0.0, 0.0, v=0, conf=None)
+                    for _ in range(expected - len(kpts))
+                ]
             elif len(kpts) > expected:
                 kpts = kpts[:expected]
             return kpts
@@ -1249,7 +1845,14 @@ class MainWindow(QtWidgets.QMainWindow):
             cls_idx = int(self._pending_region.get("cls", 0))
             if not isinstance(rect, QtCore.QRectF):
                 return
-            bbox = Box(float(rect.left()), float(rect.top()), float(rect.right()), float(rect.bottom()), cls=cls_idx, conf=pd.get("conf", None))
+            bbox = Box(
+                float(rect.left()),
+                float(rect.top()),
+                float(rect.right()),
+                float(rect.bottom()),
+                cls=cls_idx,
+                conf=pd.get("conf", None),
+            )
             kpts = _parse_kpts(pd)
             new_pose = PoseInstance(bbox=bbox, kpts=kpts)
             if self._candidates is not None and self.cand_combo.currentIndex() >= 0:
@@ -1312,8 +1915,12 @@ class MainWindow(QtWidgets.QMainWindow):
             for p in poses:
                 item = PoseItem(p, self._class_names, self._skeleton)
                 item.add_to_scene(self.scene)
-        self.view.fitInView(self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio)
-        self.status.showMessage(f"Image {self._idx + 1}/{len(self._images)}: {img_path.name}")
+        self.view.fitInView(
+            self.scene.sceneRect(), QtCore.Qt.AspectRatioMode.KeepAspectRatio
+        )
+        self.status.showMessage(
+            f"Image {self._idx + 1}/{len(self._images)}: {img_path.name}"
+        )
 
     def _cycle_candidate_by_wheel(self, delta_y: int) -> None:
         if self.cand_combo.count() <= 0:
@@ -1343,11 +1950,15 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         idx = int(self.cand_combo.currentIndex())
         if 0 <= idx < len(self._initial_candidates):
-            self._set_current_candidate_poses(copy_pose_instances(self._initial_candidates[idx]))
+            self._set_current_candidate_poses(
+                copy_pose_instances(self._initial_candidates[idx])
+            )
             self._toast("Reset")
 
     def _snapshot_scene_poses(self) -> List[PoseInstance]:
-        return [item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)]
+        return [
+            item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)
+        ]
 
     def _set_current_candidate_poses(self, poses: List[PoseInstance]) -> None:
         if not self._candidates or self.cand_combo.currentIndex() < 0:
@@ -1358,7 +1969,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._display_current_candidate()
 
     def _out_label_path_for(self, image_path: Path) -> Path:
-        out_dir = Path(self.output_edit.text().strip()) if self.output_edit.text().strip() else Path("output")
+        out_dir = (
+            Path(self.output_edit.text().strip())
+            if self.output_edit.text().strip()
+            else Path("output")
+        )
         return out_dir / "labels" / f"{image_path.stem}.txt"
 
     def _skip_to_next_unlabeled(self, direction: int) -> None:
@@ -1382,8 +1997,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         model_path = Path(model_txt)
         input_dir = Path(input_txt)
-        output_dir = Path(self.output_edit.text().strip()) if self.output_edit.text().strip() else Path("output")
-        rejected_dir = Path(self.rejected_edit.text().strip()) if self.rejected_edit.text().strip() else (output_dir / "rejected")
+        output_dir = (
+            Path(self.output_edit.text().strip())
+            if self.output_edit.text().strip()
+            else Path("output")
+        )
+        rejected_dir = (
+            Path(self.rejected_edit.text().strip())
+            if self.rejected_edit.text().strip()
+            else (output_dir / "rejected")
+        )
 
         if not model_path.exists():
             self._toast("Model path not found")
@@ -1399,6 +2022,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._input_dir = input_dir
         self._output_dir = output_dir
         self._rejected_dir = rejected_dir
+        if not self.train_model_edit.text().strip():
+            self.train_model_edit.setText(str(model_path))
+        if not self.train_project_edit.text().strip():
+            self.train_project_edit.setText(str(output_dir / "train_runs"))
         self._skip_existing = bool(self.skip_chk.isChecked())
         self._delete_rejected = bool(self.delete_chk.isChecked())
 
@@ -1410,7 +2037,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._toast("No images found")
             return
 
-        self._idx = 0
+        self._idx = int(max(0, min(int(self._resume_idx), len(self._images) - 1)))
         self._skip_to_next_unlabeled(+1)
 
         # Start worker + show loading indicator. We only display image after inference.
@@ -1441,7 +2068,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_loading(True, "Running inference...")
 
         v_idx = int(self.variant_combo.currentIndex())
-        v = self._variants[v_idx] if 0 <= v_idx < len(self._variants) else (self._variants[0] if self._variants else {})
+        v = (
+            self._variants[v_idx]
+            if 0 <= v_idx < len(self._variants)
+            else (self._variants[0] if self._variants else {})
+        )
 
         req_id = int(self._next_req_id)
         self._next_req_id += 1
@@ -1471,7 +2102,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._toast("Select a pose first")
             return
         it0 = sel[0]
-        pose_item = it0 if isinstance(it0, PoseItem) else getattr(it0, "parent_pose", None)
+        pose_item = (
+            it0 if isinstance(it0, PoseItem) else getattr(it0, "parent_pose", None)
+        )
         if not isinstance(pose_item, PoseItem):
             self._toast("Select a pose first")
             return
@@ -1505,7 +2138,9 @@ class MainWindow(QtWidgets.QMainWindow):
             "expand": 0.2,
             "conf": float(self.conf_spin.value()),
             "iou": float(self.iou_spin.value()),
-            "expected_kpts": int(self._expected_kpts) if self._expected_kpts is not None else None,
+            "expected_kpts": int(self._expected_kpts)
+            if self._expected_kpts is not None
+            else None,
         }
         self._worker.write((json.dumps(msg) + "\n").encode("utf-8"))
         self._toast("Predicting in bbox...")
@@ -1523,20 +2158,34 @@ class MainWindow(QtWidgets.QMainWindow):
             self._reload_current()
 
     def _accept(self):
-        if not self._images or not self._output_dir: return
-        
+        if not self._images or not self._output_dir:
+            return
+
         # Sync and filter: only keep objects that have at least one visible point
-        raw_poses = [item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)]
+        raw_poses = [
+            item.get_pose() for item in self.scene.items() if isinstance(item, PoseItem)
+        ]
         current_poses = [p for p in raw_poses if any(k.v > 0 for k in p.kpts)]
-        
+
         img_path = self._images[self._idx]
         img_raw = cv2.imread(str(img_path))
         if img_raw is not None:
             # save_sample will write empty txt if current_poses is empty
-            save_sample(img_path, img_raw, current_poses, self._output_dir / "images", self._output_dir / "labels")
+            save_sample(
+                img_path,
+                img_raw,
+                current_poses,
+                self._output_dir / "images",
+                self._output_dir / "labels",
+            )
             # Keep candidate cache in sync with edits.
             if self._candidates and self.cand_combo.currentIndex() >= 0:
-                self._candidates[self.cand_combo.currentIndex()] = copy_pose_instances(current_poses)
+                self._candidates[self.cand_combo.currentIndex()] = copy_pose_instances(
+                    current_poses
+                )
+            self._accepted_since_train += 1
+            self._update_accept_counter_label()
+            self._maybe_auto_train()
         self._next()
 
     def _reject(self):
@@ -1545,7 +2194,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         img_path = self._images[self._idx]
         try:
-            safe_reject(img_path, self._rejected_dir, hard_delete=bool(self.delete_chk.isChecked()))
+            safe_reject(
+                img_path,
+                self._rejected_dir,
+                hard_delete=bool(self.delete_chk.isChecked()),
+            )
         except Exception as e:
             self._toast(str(e))
         self._next()
@@ -1561,10 +2214,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def keyPressEvent(self, event: QtGui.QKeyEvent):
         # Undo / reset
-        if (event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier) and event.key() == QtCore.Qt.Key.Key_Z:
+        if (
+            event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        ) and event.key() == QtCore.Qt.Key.Key_Z:
             self._undo()
             return
-        if (event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier) and event.key() == QtCore.Qt.Key.Key_R:
+        if (
+            event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier
+        ) and event.key() == QtCore.Qt.Key.Key_R:
             self._reset_current_candidate()
             return
 
@@ -1592,7 +2249,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     sel = self.scene.selectedItems()
                     if sel:
                         cur0 = sel[0]
-                        cur = cur0 if isinstance(cur0, PoseItem) else getattr(cur0, "parent_pose", None)
+                        cur = (
+                            cur0
+                            if isinstance(cur0, PoseItem)
+                            else getattr(cur0, "parent_pose", None)
+                        )
                     if cur in poses:
                         i = poses.index(cur)
                         nxt = poses[(i + 1) % len(poses)]
@@ -1604,17 +2265,24 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 pass
 
-        if event.key() == QtCore.Qt.Key.Key_Delete or event.key() == QtCore.Qt.Key.Key_Backspace or event.key() == QtCore.Qt.Key.Key_X:
+        if (
+            event.key() == QtCore.Qt.Key.Key_Delete
+            or event.key() == QtCore.Qt.Key.Key_Backspace
+            or event.key() == QtCore.Qt.Key.Key_X
+        ):
             selected = self.scene.selectedItems()
             if selected:
                 self._push_undo()
                 item = selected[0]
                 if isinstance(item, KeypointItem):
                     p = item.parent_pose
-                    expected = self._expected_kpts if self._expected_kpts is not None else 5
+                    expected = (
+                        self._expected_kpts if self._expected_kpts is not None else 5
+                    )
                     visible_count = len([k for k in p.kpt_items if k.v > 0])
                     if visible_count > expected:
-                        if item in p.kpt_items: p.kpt_items.remove(item)
+                        if item in p.kpt_items:
+                            p.kpt_items.remove(item)
                         self.scene.removeItem(item)
                         self._toast("Keypoint removed")
                     else:
@@ -1625,13 +2293,22 @@ class MainWindow(QtWidgets.QMainWindow):
                     self.scene.removeItem(item)
                     self._toast("Guide line removed")
                 else:
-                    target = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+                    target = (
+                        item
+                        if isinstance(item, PoseItem)
+                        else getattr(item, "parent_pose", None)
+                    )
                     if target:
                         now = time.time()
-                        if self._delete_confirm_item == target and (now - self._delete_confirm_time) < 2.0:
+                        if (
+                            self._delete_confirm_item == target
+                            and (now - self._delete_confirm_time) < 2.0
+                        ):
                             self.scene.removeItem(target)
-                            for k in target.kpt_items: self.scene.removeItem(k)
-                            for l in target.skeleton_lines: self.scene.removeItem(l)
+                            for k in target.kpt_items:
+                                self.scene.removeItem(k)
+                            for l in target.skeleton_lines:
+                                self.scene.removeItem(l)
                             self._delete_confirm_item = None
                         else:
                             self._delete_confirm_item = target
@@ -1639,10 +2316,12 @@ class MainWindow(QtWidgets.QMainWindow):
                             self._toast("Press Delete again to confirm removal")
         elif event.key() == QtCore.Qt.Key.Key_BracketLeft:
             for item in self.scene.selectedItems():
-                if isinstance(item, PoseItem): item.rotate_pose(-5)
+                if isinstance(item, PoseItem):
+                    item.rotate_pose(-5)
         elif event.key() == QtCore.Qt.Key.Key_BracketRight:
             for item in self.scene.selectedItems():
-                if isinstance(item, PoseItem): item.rotate_pose(5)
+                if isinstance(item, PoseItem):
+                    item.rotate_pose(5)
         elif event.key() == QtCore.Qt.Key.Key_N:
             self.create_mode_chk.toggle()
         super().keyPressEvent(event)
@@ -1653,16 +2332,41 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _apply_lang(self):
         zh = self._lang == "zh"
-        self.setWindowTitle("YOLO 姿态集成标注工具" if zh else "YOLO Pose Integrated Labeler")
+        self.setWindowTitle(
+            "YOLO 姿态集成标注工具" if zh else "YOLO Pose Integrated Labeler"
+        )
         self.lang_btn.setText("English" if zh else "中文")
+        self.theme_btn.setText(
+            "切换浅色"
+            if (zh and self._is_dark)
+            else (
+                "切换深色"
+                if zh
+                else ("Switch Light" if self._is_dark else "Switch Dark")
+            )
+        )
+        self._update_settings_toggle_text()
         self.project_yaml_label.setText("工程YAML" if zh else "Project YAML")
         self.model_label.setText("模型(.pt)" if zh else "Model (.pt)")
         self.class_label.setText("当前类别" if zh else "Current Class")
         self.input_label.setText("输入文件夹" if zh else "Input Folder")
         self.output_label.setText("输出文件夹" if zh else "Output Folder")
         self.rejected_label.setText("拒绝文件夹" if zh else "Rejected Folder")
+        self.conf_label.setText("置信度" if zh else "Conf")
+        self.iou_label.setText("IoU阈值" if zh else "IoU")
+        self.variant_label.setText("候选策略" if zh else "Variant")
+        self.pick_candidate_label.setText("候选结果" if zh else "Candidate")
+        self.candidates_label.setText("候选数量" if zh else "Candidates")
+        self.kpt_std_label.setText("关键点抖动(px)" if zh else "Kpt Jitter (px)")
+        self.bbox_std_label.setText("框抖动(px)" if zh else "BBox Jitter (px)")
+        self.seed_label.setText("随机种子" if zh else "Seed")
+        self.device_label.setText("推理设备" if zh else "Device")
         self.skip_chk.setText("跳过已输出标签" if zh else "Skip existing output labels")
-        self.delete_chk.setText("拒绝时删除输入图片(危险)" if zh else "Delete rejected input images (DANGEROUS)")
+        self.delete_chk.setText(
+            "拒绝时删除输入图片(危险)"
+            if zh
+            else "Delete rejected input images (DANGEROUS)"
+        )
         self.load_btn.setText("启动会话" if zh else "Load Session")
         self.accept_btn.setText("保存 (S)" if zh else "Save (S)")
         self.reject_btn.setText("拒绝 (R)" if zh else "Reject (R)")
@@ -1671,23 +2375,42 @@ class MainWindow(QtWidgets.QMainWindow):
         self.line_mode_chk.setText("画辅助线模式 (L)" if zh else "Draw Line Mode (L)")
         self.color_btn.setText("选取线条颜色" if zh else "Pick Line Color")
         self.reroll_btn.setText("重新随机" if zh else "Re-roll")
-        self.shortcuts_label.setText(
-            "快捷键:\nA/D: 上/下一张\nS/R: 保存/拒绝\n1-9: 切换类别\nDel/X: 隐藏点 / 删线\n右键: 快隐点 / 快删线\n双击Del: 删整框\nN: 绘框模式\nShift+N: 补缺失点\nAlt+N: 新增关键点\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转框" if zh else
-            "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\n1-9: Switch Class\nDel/X: Hide point / Del line\nRight-Click: Fast hide/del\nDouble-Del: Remove bbox\nN: Create mode\nShift+N: Add missing kpt\nAlt+N: Add new kpt\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate"
+        self.auto_train_chk.setText("自动训练" if zh else "Auto Train")
+        self.train_threshold_label.setText("训练触发阈值" if zh else "Train Threshold")
+        self.train_data_label.setText("训练数据YAML" if zh else "Train Data YAML")
+        self.train_model_label.setText("训练基模型" if zh else "Train Base Model")
+        self.train_project_label.setText("训练输出目录" if zh else "Train Output Dir")
+        self.train_name_label.setText("训练名称" if zh else "Train Run Name")
+        self.train_epochs_label.setText("训练轮次" if zh else "Train Epochs")
+        self.train_imgsz_label.setText("训练尺寸" if zh else "Train ImgSz")
+        self.train_batch_label.setText("训练批大小" if zh else "Train Batch")
+        self.train_device_label.setText("训练设备" if zh else "Train Device")
+        self.train_now_btn.setText("立即训练" if zh else "Run Training Now")
+        self.train_stop_btn.setText("停止训练" if zh else "Stop Training")
+        self.actions_group.setTitle("功能按钮区" if zh else "Action Hub")
+        self.accept_counter_label.setText(
+            f"自上次训练后已保存: {self._accepted_since_train}"
+            if zh
+            else f"Accepted since last train: {self._accepted_since_train}"
         )
-
-
-
+        self.shortcuts_label.setText(
+            "快捷键:\nA/D: 上/下一张\nS/R: 保存/拒绝\n1-9: 切换类别\nDel/X: 隐藏点 / 删线\n右键: 快隐点 / 快删线\n双击Del: 删整框\nN: 绘框模式\nShift+N: 补缺失点\nAlt+N: 新增关键点\nL: 画线模式\nCtrl+滚轮: 缩放\n空格+拖拽: 平移\n[/]: 旋转框"
+            if zh
+            else "Shortcuts:\nA/D: Prev/Next\nS/R: Save/Reject\n1-9: Switch Class\nDel/X: Hide point / Del line\nRight-Click: Fast hide/del\nDouble-Del: Remove bbox\nN: Create mode\nShift+N: Add missing kpt\nAlt+N: Add new kpt\nL: Line mode\nCtrl+Wheel: Zoom\nSpace+Drag: Pan\n[/]: Rotate"
+        )
+        self._set_train_status(self.train_status_label.text())
 
     def _pick_project_yaml(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select YAML", "", "YAML (*.yaml *.yml)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select YAML", "", "YAML (*.yaml *.yml)"
+        )
         if path:
             self.project_yaml_edit.setText(path)
             data = load_project_yaml(Path(path))
             self._class_names = data["names"]
             self._skeleton = data["skeleton"]
             self._expected_kpts = data.get("expected_kpts", 5)
-            
+
             # Populate class list
             self.class_list.blockSignals(True)
             self.class_list.clear()
@@ -1697,12 +2420,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self.class_list.blockSignals(False)
 
     def _pick_model(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select Model", "", "Model (*.pt)")
-        if path: self.model_edit.setText(path)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select Model", "", "Model (*.pt)"
+        )
+        if path:
+            self.model_edit.setText(path)
+            if not self.train_model_edit.text().strip():
+                self.train_model_edit.setText(path)
 
     def _pick_input(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Input Folder")
-        if path: self.input_edit.setText(path)
+        if path:
+            self.input_edit.setText(path)
 
     def _pick_output(self):
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Output Folder")
@@ -1712,12 +2441,61 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.rejected_edit.setText(str(Path(path) / "rejected"))
 
     def _pick_rejected(self):
-        path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select Rejected Folder")
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Rejected Folder"
+        )
         if path:
             self.rejected_edit.setText(path)
 
+    def _pick_train_data(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Select data.yaml", self.train_data_edit.text(), "YAML (*.yaml *.yml)"
+        )
+        if path:
+            self.train_data_edit.setText(path)
+
+    def _pick_train_model(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            "Select Train Base Model",
+            self.train_model_edit.text() or self.model_edit.text(),
+            "Model (*.pt)",
+        )
+        if path:
+            self.train_model_edit.setText(path)
+
+    def _pick_train_project(self):
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select Train Output Directory", self.train_project_edit.text()
+        )
+        if path:
+            self.train_project_edit.setText(path)
+
     def _toast(self, msg):
         self.status.showMessage(str(msg), 3000)
+
+    def _update_accept_counter_label(self) -> None:
+        if self._lang == "zh":
+            self.accept_counter_label.setText(
+                f"自上次训练后已保存: {self._accepted_since_train}"
+            )
+        else:
+            self.accept_counter_label.setText(
+                f"Accepted since last train: {self._accepted_since_train}"
+            )
+
+    def _maybe_auto_train(self) -> None:
+        if not self.auto_train_chk.isChecked():
+            return
+        if self._train_running:
+            return
+        threshold = int(self.train_threshold_spin.value())
+        if threshold <= 0:
+            return
+        if self._accepted_since_train >= threshold:
+            self._accepted_since_train -= threshold
+            self._update_accept_counter_label()
+            self._start_training(manual=False)
 
     def _snap_kpt_to_guides(self, value: QtCore.QPointF) -> QtCore.QPointF:
         # Best-effort snapping: if a keypoint is close to a guide line, project onto it.
@@ -1754,7 +2532,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _hbox(self, a, b):
         w = QtWidgets.QWidget()
         l = QtWidgets.QHBoxLayout(w)
-        l.setContentsMargins(0,0,0,0)
+        l.setContentsMargins(0, 0, 0, 0)
         l.addWidget(a)
         l.addWidget(b)
         return w
@@ -1765,18 +2543,20 @@ class MainWindow(QtWidgets.QMainWindow):
         if not selected:
             return
         item = selected[0]
-        pose = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+        pose = (
+            item if isinstance(item, PoseItem) else getattr(item, "parent_pose", None)
+        )
         if not pose:
             return
-            
+
         new_id = 0
         if pose.kpt_items:
             new_id = max(k.id for k in pose.kpt_items) + 1
-        
+
         # Get scene pos from view's cursor
         view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
         scene_pos = self.view.mapToScene(view_pos)
-        
+
         ki = KeypointItem(scene_pos.x(), scene_pos.y(), new_id, pose)
         ki.set_visible_state(2)
         pose.kpt_items.append(ki)
@@ -1790,10 +2570,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if not selected:
             return
         item = selected[0]
-        pose = item if isinstance(item, PoseItem) else getattr(item, 'parent_pose', None)
+        pose = (
+            item if isinstance(item, PoseItem) else getattr(item, "parent_pose", None)
+        )
         if not pose:
             return
-            
+
         for ki in pose.kpt_items:
             if ki.v == 0:
                 view_pos = self.view.mapFromGlobal(QtGui.QCursor.pos())
@@ -1808,6 +2590,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def add(k, fn):
             sc = QtGui.QShortcut(QtGui.QKeySequence(k), self)
             sc.activated.connect(fn)
+
         add("D", self._next)
         add("Right", self._next)
         add("Space", self._accept)
@@ -1815,6 +2598,13 @@ class MainWindow(QtWidgets.QMainWindow):
         add("Left", self._prev)
         add("S", self._accept)
         add("R", self._reject)
+        add(
+            "V",
+            lambda: self.variant_combo.setCurrentIndex(
+                (self.variant_combo.currentIndex() + 1)
+                % max(1, self.variant_combo.count())
+            ),
+        )
         add("L", lambda: self.line_mode_chk.toggle())
         add("Ctrl+L", lambda: self.line_mode_chk.toggle())
         add("C", lambda: self._cycle_candidate_by_wheel(+1))
@@ -1822,17 +2612,183 @@ class MainWindow(QtWidgets.QMainWindow):
         add("Alt+N", self._on_alt_n)
         add("P", self._predict_selected_bbox)
 
+    def _init_train_worker(self) -> None:
+        self._train_worker = QtCore.QProcess(self)
+        self._train_worker.setProcessChannelMode(
+            QtCore.QProcess.ProcessChannelMode.MergedChannels
+        )
+        self._train_worker.readyReadStandardOutput.connect(self._on_train_worker_stdout)
+
+    def _ensure_train_worker_started(self) -> bool:
+        if self._train_worker is None:
+            self._init_train_worker()
+        assert self._train_worker is not None
+        if self._train_worker.state() != QtCore.QProcess.ProcessState.NotRunning:
+            return True
+
+        py = sys.executable
+        if getattr(sys, "frozen", False):
+            args = ["--worker", "train"]
+        else:
+            script = str(
+                (Path(__file__).parent / "worker" / "train_worker.py").resolve()
+            )
+            args = [script]
+        self._train_worker.setProgram(py)
+        self._train_worker.setArguments(args)
+        self._train_worker.setWorkingDirectory(str(Path(__file__).parent))
+        self._train_worker.start()
+        if not self._train_worker.waitForStarted(5000):
+            self._toast("Training worker failed to start")
+            return False
+        return True
+
+    def _start_training(self, manual: bool) -> None:
+        if self._train_running:
+            self._toast("Training is already running")
+            return
+
+        model_txt = (
+            self.train_model_edit.text().strip() or self.model_edit.text().strip()
+        )
+        data_txt = self.train_data_edit.text().strip()
+        project_txt = self.train_project_edit.text().strip()
+        run_name = self.train_name_edit.text().strip() or "auto"
+
+        if not model_txt:
+            self._toast("Please select train base model")
+            return
+        if not data_txt:
+            self._toast("Please select train data yaml")
+            return
+
+        model_path = Path(model_txt)
+        data_path = Path(data_txt)
+        if not model_path.exists():
+            self._toast("Train base model path not found")
+            return
+        if not data_path.exists():
+            self._toast("Train data yaml not found")
+            return
+
+        if project_txt:
+            project_path = Path(project_txt)
+        elif self._output_dir is not None:
+            project_path = self._output_dir / "train_runs"
+        else:
+            project_path = Path("train_runs")
+        project_path.mkdir(parents=True, exist_ok=True)
+
+        if run_name == "auto":
+            run_name = f"auto_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        if not self._ensure_train_worker_started():
+            return
+
+        req_id = int(self._train_req_id)
+        self._train_req_id += 1
+        self._train_inflight_id = req_id
+        self._set_train_running_state(True)
+        self._set_train_status(
+            "Train: running" if self._lang == "en" else "训练状态: 运行中"
+        )
+
+        msg = {
+            "type": "train",
+            "id": req_id,
+            "model": str(model_path),
+            "data": str(data_path),
+            "epochs": int(self.train_epochs_spin.value()),
+            "imgsz": int(self.train_imgsz_spin.value()),
+            "batch": int(self.train_batch_spin.value()),
+            "device": str(self.train_device_combo.currentData()),
+            "project": str(project_path),
+            "name": str(run_name),
+            "manual": bool(manual),
+        }
+        assert self._train_worker is not None
+        self._train_worker.write((json.dumps(msg) + "\n").encode("utf-8"))
+
+    def _on_train_worker_stdout(self) -> None:
+        if self._train_worker is None:
+            return
+        raw_data = self._train_worker.readAllStandardOutput()
+        data = bytes(raw_data.data()).decode("utf-8", errors="replace")
+        self._train_worker_buf += data
+        while "\n" in self._train_worker_buf:
+            line, self._train_worker_buf = self._train_worker_buf.split("\n", 1)
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+
+            mtype = str(msg.get("type", ""))
+            if mtype == "status":
+                phase = str(msg.get("phase", "working"))
+                self._set_train_status(
+                    f"Train: {phase}" if self._lang == "en" else f"训练状态: {phase}"
+                )
+                continue
+
+            if mtype == "progress":
+                value = int(msg.get("value", 0))
+                if value < 0:
+                    value = 0
+                if value > 100:
+                    value = 100
+                self._train_progress_value = value
+                self.train_progress.setValue(value)
+                self.train_progress.setFormat(f"{value}%")
+                continue
+
+            if mtype == "result":
+                rid = msg.get("id")
+                if (
+                    self._train_inflight_id is not None
+                    and rid is not None
+                    and int(rid) != int(self._train_inflight_id)
+                ):
+                    continue
+                self._set_train_running_state(False)
+                self._train_inflight_id = None
+                if bool(msg.get("ok")):
+                    payload = msg.get("payload", {})
+                    save_dir = str(payload.get("save_dir", ""))
+                    self.train_progress.setValue(100)
+                    self.train_progress.setFormat("100%")
+                    self._set_train_status(
+                        (
+                            f"Train: success ({save_dir})"
+                            if save_dir
+                            else "Train: success"
+                        )
+                        if self._lang == "en"
+                        else (
+                            f"训练状态: 成功 ({save_dir})"
+                            if save_dir
+                            else "训练状态: 成功"
+                        )
+                    )
+                    self._toast("Training completed")
+                else:
+                    err = str(msg.get("error", "training failed"))
+                    self.train_progress.setFormat("failed")
+                    self._set_train_status(
+                        "Train: failed" if self._lang == "en" else "训练状态: 失败"
+                    )
+                    self._toast(err)
+
     def _load_settings(self):
         self._settings = QtCore.QSettings("YoloLabeler", "Integrated")
-        
+
         m = self._settings.value("model_path", "")
         if m:
             self.model_edit.setText(str(m))
-        
+
         i = self._settings.value("input_dir", "")
         if i:
             self.input_edit.setText(str(i))
-        
+
         o = self._settings.value("output_dir", "")
         if o:
             self.output_edit.setText(str(o))
@@ -1845,13 +2801,78 @@ class MainWindow(QtWidgets.QMainWindow):
         self.delete_chk.setChecked(bool(self._settings.value("delete_rejected", False)))
 
         try:
-            self.num_candidates_spin.setValue(int(str(self._settings.value("num_candidates", 6))))
+            self.num_candidates_spin.setValue(
+                int(str(self._settings.value("num_candidates", 6)))
+            )
             self.seed_spin.setValue(int(str(self._settings.value("seed", 0))))
-            self.kpt_std_spin.setValue(float(str(self._settings.value("kpt_std_px", 2.0))))
-            self.bbox_std_spin.setValue(float(str(self._settings.value("bbox_std_px", 1.0))))
+            self.kpt_std_spin.setValue(
+                float(str(self._settings.value("kpt_std_px", 2.0)))
+            )
+            self.bbox_std_spin.setValue(
+                float(str(self._settings.value("bbox_std_px", 1.0)))
+            )
         except Exception:
             pass
-        
+
+        try:
+            self.train_threshold_spin.setValue(
+                int(str(self._settings.value("train_threshold", 200)))
+            )
+            self.train_epochs_spin.setValue(
+                int(str(self._settings.value("train_epochs", 100)))
+            )
+            self.train_imgsz_spin.setValue(
+                int(str(self._settings.value("train_imgsz", 640)))
+            )
+            self.train_batch_spin.setValue(
+                int(str(self._settings.value("train_batch", 16)))
+            )
+            self.auto_train_chk.setChecked(
+                bool(self._settings.value("auto_train", False))
+            )
+            self._accepted_since_train = int(
+                str(self._settings.value("accepted_since_train", 0))
+            )
+            self._resume_idx = int(str(self._settings.value("resume_idx", 0)))
+        except Exception:
+            self._accepted_since_train = 0
+            self._resume_idx = 0
+
+        td = self._settings.value("train_data_yaml", "")
+        if td:
+            self.train_data_edit.setText(str(td))
+        tm = self._settings.value("train_model", "")
+        if tm:
+            self.train_model_edit.setText(str(tm))
+        tp = self._settings.value("train_project", "")
+        if tp:
+            self.train_project_edit.setText(str(tp))
+        tn = self._settings.value("train_name", "auto")
+        if tn:
+            self.train_name_edit.setText(str(tn))
+        tdev = str(self._settings.value("train_device", "cpu"))
+        tdev_idx = self.train_device_combo.findData(tdev)
+        if tdev_idx >= 0:
+            self.train_device_combo.setCurrentIndex(tdev_idx)
+
+        geom = self._settings.value("window_geometry")
+        if isinstance(geom, QtCore.QByteArray):
+            self.restoreGeometry(geom)
+        state = self._settings.value("window_state")
+        if isinstance(state, QtCore.QByteArray):
+            self.restoreState(state)
+        split_state = self._settings.value("splitter_state")
+        if isinstance(split_state, QtCore.QByteArray) and self._splitter is not None:
+            self._splitter.restoreState(split_state)
+
+        self._is_dark = bool(self._settings.value("theme_dark", True))
+        self._settings_panel_visible = bool(
+            self._settings.value("settings_panel_visible", False)
+        )
+        self._set_settings_panel_visible(self._settings_panel_visible)
+
+        self._update_accept_counter_label()
+
         y = self._settings.value("project_yaml", "")
         if y:
             self.project_yaml_edit.setText(str(y))
@@ -1866,7 +2887,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     for k in sorted(self._class_names.keys()):
                         self.class_list.addItem(f"{k}: {self._class_names[k]}")
                     self.class_list.setCurrentRow(0)
-                except: pass
+                except:
+                    pass
 
     def _save_settings(self):
         self._settings.setValue("model_path", self.model_edit.text())
@@ -1883,23 +2905,97 @@ class MainWindow(QtWidgets.QMainWindow):
         self._settings.setValue("kpt_std_px", float(self.kpt_std_spin.value()))
         self._settings.setValue("bbox_std_px", float(self.bbox_std_spin.value()))
 
+        self._settings.setValue("auto_train", bool(self.auto_train_chk.isChecked()))
+        self._settings.setValue(
+            "train_threshold", int(self.train_threshold_spin.value())
+        )
+        self._settings.setValue("train_data_yaml", self.train_data_edit.text())
+        self._settings.setValue("train_model", self.train_model_edit.text())
+        self._settings.setValue("train_project", self.train_project_edit.text())
+        self._settings.setValue("train_name", self.train_name_edit.text())
+        self._settings.setValue("train_epochs", int(self.train_epochs_spin.value()))
+        self._settings.setValue("train_imgsz", int(self.train_imgsz_spin.value()))
+        self._settings.setValue("train_batch", int(self.train_batch_spin.value()))
+        self._settings.setValue(
+            "train_device", str(self.train_device_combo.currentData())
+        )
+        self._settings.setValue("accepted_since_train", int(self._accepted_since_train))
+        self._settings.setValue("resume_idx", int(self._idx))
+
+        self._settings.setValue("window_geometry", self.saveGeometry())
+        self._settings.setValue("window_state", self.saveState())
+        if self._splitter is not None:
+            self._settings.setValue("splitter_state", self._splitter.saveState())
+        self._settings.setValue("theme_dark", bool(self._is_dark))
+        self._settings.setValue(
+            "settings_panel_visible", bool(self._settings_panel_visible)
+        )
+
     def closeEvent(self, event):
         self._save_settings()
         self._stop_worker()
+        self._stop_train_worker()
         super().closeEvent(event)
+
+    def _on_about_to_quit(self):
+        self._stop_worker()
+        self._stop_train_worker()
 
     def _stop_worker(self):
         if self._worker.state() != QtCore.QProcess.ProcessState.NotRunning:
+            try:
+                self._worker.write(b'{"type":"quit"}\n')
+                self._worker.waitForBytesWritten(200)
+            except Exception:
+                pass
             self._worker.terminate()
             if not self._worker.waitForFinished(1000):
                 self._worker.kill()
+                self._worker.waitForFinished(1000)
 
-def main():
+    def _stop_train_worker(self):
+        if self._train_worker is None:
+            return
+        if self._train_worker.state() != QtCore.QProcess.ProcessState.NotRunning:
+            try:
+                self._train_worker.write(b'{"type":"quit"}\n')
+                self._train_worker.waitForBytesWritten(200)
+            except Exception:
+                pass
+            self._train_worker.terminate()
+            if not self._train_worker.waitForFinished(1000):
+                self._train_worker.kill()
+                self._train_worker.waitForFinished(1000)
+        self._set_train_running_state(False)
 
-    app = QtWidgets.QApplication(sys.argv)
+
+def _run_worker_mode(argv: list[str]) -> int:
+    if len(argv) >= 3 and argv[1] == "--worker":
+        kind = str(argv[2]).strip().lower()
+        if kind == "infer":
+            from yolo_infer_worker import worker_main as infer_worker_main
+
+            return int(infer_worker_main())
+        if kind == "train":
+            from yolo_train_worker import worker_main as train_worker_main
+
+            return int(train_worker_main())
+    return -1
+
+
+def main(argv: Optional[list[str]] = None):
+    if argv is None:
+        argv = list(sys.argv)
+
+    worker_ret = _run_worker_mode(argv)
+    if worker_ret >= 0:
+        return worker_ret
+
+    app = QtWidgets.QApplication(argv)
     w = MainWindow()
     w.show()
     return app.exec()
+
 
 if __name__ == "__main__":
     sys.exit(main())
